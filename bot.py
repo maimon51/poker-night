@@ -33,6 +33,7 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 upsert=True
             )
             await update.message.reply_text(message)
+            print(message)
         else:
             # הוספת השחקן למסד הנתונים
             players_collection.update_one(
@@ -40,8 +41,9 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 {"$set": {"chips_bought": chips_bought, "chips_end": 0}},
                 upsert=True
             )
-
-            await update.message.reply_text(f"שחקן {name} נוסף עם {chips_bought} צ'יפים")
+            message = f"שחקן {name} נוסף עם {chips_bought} צ'יפים"
+            await update.message.reply_text(message)
+            print(message)
     except (IndexError, ValueError):
         await update.message.reply_text("שימוש: /buy <שם> <כמות צ'יפים>")
 
@@ -57,10 +59,13 @@ async def end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 {"name": name},
                 {"$set": {"chips_end": chips_end}}
             )
-
-            await update.message.reply_text(f"שחקן {name} סיים עם {chips_end} צ'יפים")
+            message = f"שחקן {name} סיים עם {chips_end} צ'יפים"
+            await update.message.reply_text(message)
+            print(message)
         else:
-            await update.message.reply_text(f"שחקן {name} לא קיים")
+            message = f"שחקן {name} לא קיים"
+            await update.message.reply_text(message)
+            print(message)
             
     except (IndexError, ValueError):
         await update.message.reply_text("שימוש: /end <שם> <כמות צ'יפים>")
@@ -74,7 +79,7 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     ratio = float(context.args[0])  # כמה עולה 1000 צ'יפים
 
     message = 'סיכום המשחק:\n'
-    message += f"יחס ההמרה ₪/1000: {ratio}\n"
+    message += f"יחס ההמרה ₪{ratio}/1000\n"
 
     # משתנים לצורך בדיקת כמות הצ'יפים הכוללת
     total_chips_bought = 0
@@ -145,7 +150,9 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             creditors.append(creditor)
 
     # שליחת ההודעות
+    
     await update.message.reply_text(message + transfer_message)
+    print(message + transfer_message)
     
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = 'מחיקת המשחק:\n'
@@ -177,9 +184,10 @@ def main():
     application.add_handler(CommandHandler("debug", debug))
 
     # התחלת הבוט
+    print("Bot polling")
     application.run_polling(poll_interval=2.0, timeout=10)
-    print("Bot started")
-
+    print("Bot ended polling")
+    
 if __name__ == '__main__':
     print("Starting main...")
     main()

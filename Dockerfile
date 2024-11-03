@@ -14,6 +14,7 @@ WORKDIR /app
 COPY pyproject.toml poetry.lock ./
 
 RUN poetry install --verbose
+RUN poetry show
 
 COPY . .
 
