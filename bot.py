@@ -6,7 +6,8 @@ from pymongo import MongoClient
 TOKEN = '7401130201:AAEBfejEiECuujHRrzdPferHx4xuFzdfsMQ'
 
 # התחברות למסד הנתונים MongoDB
-client = MongoClient('mongodb://root:rootroot@localhost:27017/')
+mongo_uri = os.getenv("MONGO_URI", "mongodb://mongo:27017/mydatabase")
+client = MongoClient(mongo_uri)
 db = client['poker_bot']
 players_collection = db['players']
 
