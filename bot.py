@@ -1,6 +1,7 @@
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from pymongo import MongoClient
+import os
 
 # הגדרת הטוקן שלך
 TOKEN = '7401130201:AAEBfejEiECuujHRrzdPferHx4xuFzdfsMQ'
