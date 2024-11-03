@@ -7,13 +7,6 @@ services:
     depends_on:
       - mongo
     environment:
-      - MONGO_URI=mongodb://mongo:27017/mydatabase
+      - MONGO_URI=mongodb+srv://maimon51:mgdk2ZpMx8iehODI@bot-db.opj9k.mongodb.net/?retryWrites=true&w=majority&appName=bot-db
       - BOT_TOKEN=7401130201:AAEBfejEiECuujHRrzdPferHx4xuFzdfsMQ
-
-  mongo:
-    image: mongo:latest
-    ports:
-      - "27017:27017"
-    volumes:
-      - /data/db
 
