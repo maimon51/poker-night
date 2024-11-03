@@ -1,193 +1,217 @@
+import os
+from datetime import datetime
+from pymongo import MongoClient
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from pymongo import MongoClient
-import os
 
-# הגדרת הטוקן שלך
-TOKEN = '7401130201:AAEBfejEiECuujHRrzdPferHx4xuFzdfsMQ'
+# הגדרות קבועות ומידע חסוי ממשתני סביבה
+TOKEN = os.getenv("BOT_TOKEN")
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/mydatabase")
 
-# התחברות למסד הנתונים MongoDB
-mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/mydatabase")
-print(f"Connecting to MongoDB at {mongo_uri}")
-client = MongoClient(mongo_uri)
+# התחברות למסד הנתונים
+client = MongoClient(MONGO_URI)
 db = client['poker_bot']
 players_collection = db['players']
-print(f"Connected to MongoDB at {mongo_uri}")
+games_collection = db['games']
 
-# הגדרת הפקודה להוספת שחקן חדש וקניית צ'יפים
+print(f"Connected to MongoDB at {MONGO_URI}")
+
+# ==========================
+# פונקציות עזר
+# ==========================
+
+def get_or_create_active_game(chat_id):
+    """ מחזירה את game_id של המשחק הפעיל בצ'אט או יוצרת חדש אם אין כזה """
+    active_game = games_collection.find_one({"chat_id": chat_id, "status": "active"})
+    if not active_game:
+        game_id = games_collection.insert_one({
+            "chat_id": chat_id,
+            "start_date": datetime.now(),
+            "end_date": None,
+            "status": "active"
+        }).inserted_id
+    else:
+        game_id = active_game["_id"]
+    return game_id
+
+
+def end_current_game(chat_id):
+    """ מסמנת את המשחק הפעיל כלא פעיל ומעדכנת תאריך סיום """
+    games_collection.update_one(
+        {"chat_id": chat_id, "status": "active"},
+        {"$set": {"status": "inactive", "end_date": datetime.now()}}
+    )
+
+def get_player_data(chat_id, game_id, name):
+    """ מחזירה נתוני שחקן במשחק הנוכחי אם קיים """
+    return players_collection.find_one({"chat_id": chat_id, "game_id": game_id, "name": name})
+
+async def send_message(update, message):
+    """ שולחת הודעה לצ'אט הנוכחי """
+    await update.message.reply_text(message)
+
+# ==========================
+# פקודות בוט
+# ==========================
+
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    try:
-        name = context.args[0]
-        chips_bought = int(context.args[1])
+    """ הוספת שחקן או עדכון קניית צ'יפים עבור שחקן קיים """
+    chat_id = update.effective_chat.id
+    game_id = get_or_create_active_game(chat_id)
 
-        found = players_collection.find_one({"name": name})
-        if found:
-            # עדכון כמות הצ'יפים שנרכשו
-            chips_exist = found['chips_bought']
-            chips_total = chips_bought + chips_exist
-            message = f"שחקן {name} קיים ונוספו לו {chips_bought} צ'יפים, סה\"כ {chips_total} צ'יפים"
-            # הוספת השחקן למסד הנתונים
+    try:
+        name, chips_bought = context.args[0], int(context.args[1])
+        player = get_player_data(chat_id, game_id, name)
+
+        if player:
+            chips_total = chips_bought + player['chips_bought']
             players_collection.update_one(
-                {"name": name},
-                {"$set": {"chips_bought": chips_total, "chips_end": 0}},
-                upsert=True
+                {"_id": player["_id"]},
+                {"$set": {"chips_bought": chips_total}}
             )
-            await update.message.reply_text(message)
-            print(message)
+            message = f"שחקן {name} קיים, נוספו לו {chips_bought} צ'יפים (סה\"כ {chips_total})"
         else:
-            # הוספת השחקן למסד הנתונים
-            players_collection.update_one(
-                {"name": name},
-                {"$set": {"chips_bought": chips_bought, "chips_end": 0}},
-                upsert=True
-            )
+            players_collection.insert_one({
+                "chat_id": chat_id,
+                "game_id": game_id,
+                "name": name,
+                "chips_bought": chips_bought,
+                "chips_end": 0
+            })
             message = f"שחקן {name} נוסף עם {chips_bought} צ'יפים"
-            await update.message.reply_text(message)
-            print(message)
+        await send_message(update, message)
     except (IndexError, ValueError):
-        await update.message.reply_text("שימוש: /buy <שם> <כמות צ'יפים>")
+        await send_message(update, "שימוש: /buy <שם> <כמות צ'יפים>")
 
-# פקודה לעדכון כמות הצ'יפים הסופית
 async def end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """ עדכון צ'יפים סופי עבור שחקן """
+    chat_id = update.effective_chat.id
+    game_id = get_or_create_active_game(chat_id)
+
     try:
-        name = context.args[0]
-        chips_end = int(context.args[1])
-        found = players_collection.find_one({"name": name})
-        if found:
-            # עדכון השחקן במסד הנתונים
+        name, chips_end = context.args[0], int(context.args[1])
+        player = get_player_data(chat_id, game_id, name)
+
+        if player:
             players_collection.update_one(
-                {"name": name},
+                {"_id": player["_id"]},
                 {"$set": {"chips_end": chips_end}}
             )
             message = f"שחקן {name} סיים עם {chips_end} צ'יפים"
-            await update.message.reply_text(message)
-            print(message)
         else:
             message = f"שחקן {name} לא קיים"
-            await update.message.reply_text(message)
-            print(message)
-            
+        await send_message(update, message)
     except (IndexError, ValueError):
-        await update.message.reply_text("שימוש: /end <שם> <כמות צ'יפים>")
+        await send_message(update, "שימוש: /end <שם> <כמות צ'יפים>")
 
-# פקודה לסיכום המשחק
 async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """ מספקת סיכום של המשחק כולל חישוב רווחים והפסדים """
+    chat_id = update.effective_chat.id
+    game_id = get_or_create_active_game(chat_id)
+
     if len(context.args) == 0:
-        await update.message.reply_text("שימוש: /summary <יחס ההמרה>")
+        await send_message(update, "שימוש: /summary <יחס ההמרה>")
         return
-    
-    ratio = float(context.args[0])  # כמה עולה 1000 צ'יפים
 
-    message = 'סיכום המשחק:\n'
-    message += f"יחס ההמרה ₪{ratio}/1000\n"
-
-    # משתנים לצורך בדיקת כמות הצ'יפים הכוללת
-    total_chips_bought = 0
-    total_chips_end = 0
+    ratio = float(context.args[0])
+    message = f'סיכום המשחק:\nיחס ההמרה ₪{ratio}/1000\n'
     players_data = []
-
+    
     # חישוב רווחים והפסדים
-    for player in players_collection.find():
+    for player in players_collection.find({"chat_id": chat_id, "game_id": game_id}):
         name = player['name']
-        chips_bought = player.get('chips_bought')
-        chips_end = player.get('chips_end')
+        chips_bought, chips_end = player.get('chips_bought'), player.get('chips_end')
         
-        # בדיקה שכל שחקן סיים את המשחק
         if chips_bought is None or chips_end is None:
-            await update.message.reply_text(f"שחקן {name} עדיין לא השלים את הנתונים")
+            await send_message(update, f"שחקן {name} עדיין לא השלים את הנתונים")
             return
         
-        total_chips_bought += chips_bought
-        total_chips_end += chips_end
         difference = chips_end - chips_bought
-        amount = difference * (ratio / 1000)  # חישוב ההמרה לפי יחס - ש"ח
+        amount = difference * (ratio / 1000)
+        players_data.append({'name': name, 'amount': amount})
 
-        players_data.append({
-            'name': name,
-            'amount': amount
-        })
-
-        if amount > 0:
-            message += f"{name} צריך לקבל {amount} ₪\n"
-        elif amount < 0:
-            message += f"{name} צריך לשלם {abs(amount)} ₪\n"
+        message += f"{name} צריך {'לקבל' if amount > 0 else 'לשלם'} {abs(amount)} ₪\n"
     
-    # חישוב טווח טעות של 5% מסך הצ'יפים שנקנו
-    tolerance = total_chips_bought * 0.05
-    chip_difference = abs(total_chips_bought - total_chips_end)
-    
-    # בדיקה אם כמות הצ'יפים סבירה בהתחשב בטווח הטעות
-    if chip_difference > tolerance:
-        await update.message.reply_text("שגיאה: כמות הצ'יפים שנקנו שונה מכמות הצ'יפים שנמצאו בסוף בצורה משמעותית.")
-        return
-    
-    # חלוקת הטעות בין כל המשתתפים
-    if chip_difference > 0:
-        adjustment_per_player = (chip_difference * (ratio / 1000)) / len(players_data)
-        for player in players_data:
-            player['amount'] -= adjustment_per_player
-    
-    # חישוב העברות כספיות בין השחקנים
+    # העברות כספיות
+    transfer_message = "\nהעברות כספיות:\n"
     debtors = [p for p in players_data if p['amount'] < 0]
     creditors = [p for p in players_data if p['amount'] > 0]
-
-    # הודעה לסיכום העברות בין השחקנים
-    transfer_message = "\nהעברות כספיות:\n"
     
     while debtors and creditors:
-        debtor = debtors.pop()
-        creditor = creditors.pop()
+        debtor, creditor = debtors.pop(), creditors.pop()
+        transfer_amount = min(abs(debtor['amount']), creditor['amount'])
+        transfer_message += f"{debtor['name']} צריך להעביר {transfer_amount} ₪ ל{creditor['name']}\n"
+        debtor['amount'] += transfer_amount
+        creditor['amount'] -= transfer_amount
+
+        if debtor['amount'] < 0: debtors.append(debtor)
+        if creditor['amount'] > 0: creditors.append(creditor)
+
+    await send_message(update, message + transfer_message)
+
+async def endgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    game_id = games_collection.find_one({"chat_id": chat_id, "status": "active"})
+    
+    if not game_id:
+        await update.message.reply_text("אין משחק פעיל לסיים.")
+        return
+    
+    # סיום המשחק הפעיל
+    end_current_game(chat_id)
+    await update.message.reply_text("המשחק הנוכחי הסתיים ונשמר בהיסטוריה.")
+
+async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    games = games_collection.find({"chat_id": chat_id}).sort("start_date", -1)
+    message = "היסטוריית משחקים:\n"
+    for game in games:
+        start_date = game["start_date"].strftime("%Y-%m-%d %H:%M")
+        end_date = game.get("end_date", "לא ידוע").strftime("%Y-%m-%d %H:%M") if game.get("end_date") else "לא ידוע"
+        message += f"\nמזהה משחק: {game['_id']}\nתאריך התחלה: {start_date}\nתאריך סיום: {end_date}\n"
+        for player in players_collection.find({"chat_id": chat_id, "game_id": game["_id"]}):
+            message += f"שחקן {player['name']} קנה {player['chips_bought']} צ'יפים וסיים עם {player['chips_end']} צ'יפים\n"
+    await update.message.reply_text(message)
         
-        amount_to_transfer = min(abs(debtor['amount']), creditor['amount'])
-        transfer_message += f"{debtor['name']} צריך להעביר {amount_to_transfer} ₪ ל{creditor['name']}\n"
-
-        debtor['amount'] += amount_to_transfer
-        creditor['amount'] -= amount_to_transfer
-
-        if debtor['amount'] < 0:
-            debtors.append(debtor)
-        if creditor['amount'] > 0:
-            creditors.append(creditor)
-
-    # שליחת ההודעות
-    
-    await update.message.reply_text(message + transfer_message)
-    print(message + transfer_message)
-    
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    game_id = get_or_create_active_game(chat_id)
+
     message = 'מחיקת המשחק:\n'
 
-    # חישוב רווחים והפסדים
-    for player in players_collection.find():
-        
-        players_collection.delete_one(player)
-        message+= f"שחקן {player['name']} נמחק\n"
+    # מחיקת שחקנים בצ'אט הנוכחי בלבד
+    result = players_collection.delete_many({"chat_id": chat_id, "game_id": game_id})
+    message += f"{result.deleted_count} שחקנים נמחקו\n"
     await update.message.reply_text(message)
 
 async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    game_id = get_or_create_active_game(chat_id)
     message = 'נתוני המשחק:\n'
 
-    # חישוב רווחים והפסדים
-    for player in players_collection.find():
-        message+= f"שחקן {player['name']} קנה {player['chips_bought']} צ'יפים וסיים עם {player['chips_end']} צ'יפים\n"
+    # הצגת נתוני שחקנים בצ'אט הנוכחי בלבד
+    for player in players_collection.find({"chat_id": chat_id, "game_id": game_id}):
+        message += f"שחקן {player['name']} קנה {player['chips_bought']} צ'יפים וסיים עם {player['chips_end']} צ'יפים\n"
     await update.message.reply_text(message)
     
-# הגדרת הפונקציה הראשית להפעלת הבוט
+# הוספת הגדרות ל-main
 def main():
     application = Application.builder().token(TOKEN).build()
+    handlers = [
+        CommandHandler("buy", buy),
+        CommandHandler("end", end),
+        CommandHandler("summary", summary),
+        CommandHandler("clear", clear),
+        CommandHandler("debug", debug),
+        CommandHandler("endgame", endgame),
+        CommandHandler("history", history)
+    ]
+    
+    for handler in handlers:
+        application.add_handler(handler)
 
-    # הוספת פקודות לבוט
-    application.add_handler(CommandHandler("buy", buy))
-    application.add_handler(CommandHandler("end", end))
-    application.add_handler(CommandHandler("summary", summary))
-    application.add_handler(CommandHandler("clear", clear))
-    application.add_handler(CommandHandler("debug", debug))
-
-    # התחלת הבוט
     print("Bot polling")
     application.run_polling(poll_interval=2.0, timeout=10)
-    print("Bot ended polling")
-    
+
 if __name__ == '__main__':
-    print("Starting main...")
     main()
