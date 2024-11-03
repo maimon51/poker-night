@@ -18,4 +18,4 @@ RUN poetry install --verbose
 COPY . .
 
 # פקודת הרצה ראשית
-CMD ["poetry", "run", "python", "Xbot.py"]
+CMD ["poetry", "run", "python", "bot.py"]
