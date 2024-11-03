@@ -13,7 +13,7 @@ WORKDIR /app
 # העברת קבצי הפרויקט (כולל pyproject.toml ו-poetry.lock)
 COPY pyproject.toml poetry.lock ./
 
-RUN poetry install --verbose
+RUN poetry install --no-root --verbose
 RUN poetry show
 
 COPY . .
