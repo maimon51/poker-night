@@ -7,10 +7,12 @@ import os
 TOKEN = '7401130201:AAEBfejEiECuujHRrzdPferHx4xuFzdfsMQ'
 
 # התחברות למסד הנתונים MongoDB
-mongo_uri = os.getenv("MONGO_URI", "mongodb://mongo:27017/mydatabase")
+mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/mydatabase")
+print(f"Connecting to MongoDB at {mongo_uri}")
 client = MongoClient(mongo_uri)
 db = client['poker_bot']
 players_collection = db['players']
+print(f"Connected to MongoDB at {mongo_uri}")
 
 # הגדרת הפקודה להוספת שחקן חדש וקניית צ'יפים
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -175,7 +177,9 @@ def main():
     application.add_handler(CommandHandler("debug", debug))
 
     # התחלת הבוט
-    application.run_polling()
+    application.run_polling(poll_interval=2.0, timeout=10)
+    print("Bot started")
 
 if __name__ == '__main__':
+    print("Starting main...")
     main()
