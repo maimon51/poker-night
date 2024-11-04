@@ -24,11 +24,34 @@ print(f"Db connection established")
 import threading
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 
-def start_dummy_server():
-    """Starts a simple HTTP server on port 8000 for health checks."""
+def get_summary():
+    """ פונקציה שמחזירה את מספר המשחקים, הצ'אטים והשחקנים """
+    total_games = games_collection.count_documents({})
+    total_chats = len(games_collection.distinct("chat_id"))
+    total_players = players_collection.count_documents({})
+    return {
+        "total_games": total_games,
+        "total_chats": total_chats,
+        "total_players": total_players
+    }
+
+class SummaryHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/summary":
+            summary_data = get_summary()
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(summary_data).encode("utf-8"))
+        else:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"Not Found")
+
+def start_summary_server():
     server_address = ('', 8000)
-    httpd = HTTPServer(server_address, SimpleHTTPRequestHandler)
-    print("Starting dummy server for health checks on port 8000")
+    httpd = HTTPServer(server_address, SummaryHandler)
+    print("Starting summary server on port 8000")
     httpd.serve_forever()
 
 # Run the dummy server in a separate thread
@@ -192,7 +215,7 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for game in games:
         start_date = game["start_date"].strftime("%Y-%m-%d %H:%M")
         end_date = game.get("end_date", "לא ידוע").strftime("%Y-%m-%d %H:%M") if game.get("end_date") else "לא ידוע"
-        message += f"\ משחק: {count}\nתאריך התחלה: {start_date}\nתאריך סיום: {end_date}\n"
+        message += f"\nמשחק: {count}\nתאריך התחלה: {start_date}\nתאריך סיום: {end_date}\n"
         count += 1
         # הצגת דירוג אם קיים
         if 'ranking' in game:
