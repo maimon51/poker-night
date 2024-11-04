@@ -8,13 +8,14 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/mydatabase")
 
+
 # התחברות למסד הנתונים
+print(f"Connecting to MongoDB at {MONGO_URI}")
 client = MongoClient(MONGO_URI)
 db = client['poker_bot']
 players_collection = db['players']
 games_collection = db['games']
-
-print(f"Connected to MongoDB at {MONGO_URI}")
+print(f"Db connection established")
 
 # ==========================
 # פונקציות עזר
@@ -120,7 +121,6 @@ async def end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await send_message(update, "שימוש: /end <שם> <כמות צ'יפים>")
 
 async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """ מספקת סיכום של המשחק כולל חישוב רווחים והפסדים """
     chat_id = update.effective_chat.id
     game_id = get_or_create_active_game(chat_id)
 
@@ -131,7 +131,7 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     ratio = float(context.args[0])
     message = f'סיכום המשחק:\nיחס ההמרה ₪{ratio}/1000\n'
     players_data = []
-    
+
     # חישוב רווחים והפסדים
     for player in players_collection.find({"chat_id": chat_id, "game_id": game_id}):
         name = player['name']
@@ -146,6 +146,13 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         players_data.append({'name': name, 'amount': amount})
 
         message += f"{name} צריך {'לקבל' if amount > 0 else 'לשלם'} {abs(amount)} ₪\n"
+    
+    # שמירת דירוג המשחק במסד הנתונים
+    sorted_players_data = sorted(players_data, key=lambda x: x['amount'], reverse=True)
+    games_collection.update_one(
+        {"_id": game_id},
+        {"$set": {"ranking": sorted_players_data}}
+    )
     
     # העברות כספיות
     transfer_message = "\nהעברות כספיות:\n"
@@ -164,6 +171,7 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await send_message(update, message + transfer_message)
 
+
 async def endgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     game_id = games_collection.find_one({"chat_id": chat_id, "status": "active"})
@@ -180,13 +188,24 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     games = games_collection.find({"chat_id": chat_id}).sort("start_date", -1)
     message = "היסטוריית משחקים:\n"
+    count = 1
     for game in games:
         start_date = game["start_date"].strftime("%Y-%m-%d %H:%M")
         end_date = game.get("end_date", "לא ידוע").strftime("%Y-%m-%d %H:%M") if game.get("end_date") else "לא ידוע"
-        message += f"\nמזהה משחק: {game['_id']}\nתאריך התחלה: {start_date}\nתאריך סיום: {end_date}\n"
-        for player in players_collection.find({"chat_id": chat_id, "game_id": game["_id"]}):
-            message += f"שחקן {player['name']} קנה {player['chips_bought']} צ'יפים וסיים עם {player['chips_end']} צ'יפים\n"
+        message += f"\ משחק: {count+=1}\nתאריך התחלה: {start_date}\nתאריך סיום: {end_date}\n"
+
+        # הצגת דירוג אם קיים
+        if 'ranking' in game:
+            message += "דירוג:\n"
+            for player_data in game['ranking']:
+                name = player_data['name']
+                amount = player_data['amount']
+                message += f"{name} {'הרוויח' if amount > 0 else 'הפסיד'} {abs(amount)} ₪\n"
+        else:
+            message += "דירוג לא זמין למשחק זה.\n"
+        
     await update.message.reply_text(message)
+
         
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
