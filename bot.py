@@ -22,7 +22,7 @@ print(f"Db connection established")
 # ==========================
 
 import threading
-from http.server import SimpleHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 def get_summary():
     """ פונקציה שמחזירה את מספר המשחקים, הצ'אטים והשחקנים """
@@ -56,7 +56,7 @@ def start_summary_server():
 
 # Run the dummy server in a separate thread
 print("Starting dummy server thread")
-threading.Thread(target=start_dummy_server, daemon=True).start()
+threading.Thread(target=start_summary_server, daemon=True).start()
 print("Dummy server thread started")
 
 def get_or_create_active_game(chat_id):
