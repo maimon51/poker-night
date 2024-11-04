@@ -192,8 +192,8 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for game in games:
         start_date = game["start_date"].strftime("%Y-%m-%d %H:%M")
         end_date = game.get("end_date", "לא ידוע").strftime("%Y-%m-%d %H:%M") if game.get("end_date") else "לא ידוע"
-        message += f"\ משחק: {count+=1}\nתאריך התחלה: {start_date}\nתאריך סיום: {end_date}\n"
-
+        message += f"\ משחק: {count}\nתאריך התחלה: {start_date}\nתאריך סיום: {end_date}\n"
+        count += 1
         # הצגת דירוג אם קיים
         if 'ranking' in game:
             message += "דירוג:\n"
