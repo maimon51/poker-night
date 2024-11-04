@@ -20,6 +20,21 @@ print(f"Connected to MongoDB at {MONGO_URI}")
 # פונקציות עזר
 # ==========================
 
+import threading
+from http.server import SimpleHTTPRequestHandler, HTTPServer
+
+def start_dummy_server():
+    """Starts a simple HTTP server on port 8000 for health checks."""
+    server_address = ('', 8000)
+    httpd = HTTPServer(server_address, SimpleHTTPRequestHandler)
+    print("Starting dummy server for health checks on port 8000")
+    httpd.serve_forever()
+
+# Run the dummy server in a separate thread
+print("Starting dummy server thread")
+threading.Thread(target=start_dummy_server, daemon=True).start()
+print("Dummy server thread started")
+
 def get_or_create_active_game(chat_id):
     """ מחזירה את game_id של המשחק הפעיל בצ'אט או יוצרת חדש אם אין כזה """
     active_game = games_collection.find_one({"chat_id": chat_id, "status": "active"})
