@@ -3,6 +3,7 @@ from datetime import datetime
 from pymongo import MongoClient
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+import json
 
 # הגדרות קבועות ומידע חסוי ממשתני סביבה
 TOKEN = os.getenv("BOT_TOKEN")
