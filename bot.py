@@ -227,7 +227,63 @@ async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     for player in players_collection.find({"chat_id": chat_id, "game_id": game_id}):
         message += f"שחקן {player['name']} קנה {player['chips_bought']} צ'יפים וסיים עם {player['chips_end']} צ'יפים\n"
     await update.message.reply_text(message)
-    
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    players_stats = []
+
+    # שליפת כל המשחקים בצ'אט זה
+    games = games_collection.find({"chat_id": chat_id})
+    player_summary = {}
+
+    # מיפוי רווחים והפסדים עבור כל שחקן בכל המשחקים
+    for game in games:
+        game_ranking = []
+        
+        for player in players_collection.find({"chat_id": chat_id, "game_id": game["_id"]}):
+            name = player['name']
+            chips_bought = player.get('chips_bought', 0)
+            chips_end = player.get('chips_end', 0)
+            profit = chips_end - chips_bought
+            game_ranking.append((name, profit))
+
+            if name not in player_summary:
+                player_summary[name] = {
+                    "total_profit": 0,
+                    "games_played": 0,
+                    "first_place_wins": 0,
+                    "total_rank": 0,
+                }
+            player_summary[name]["total_profit"] += profit
+            player_summary[name]["games_played"] += 1
+        
+        # מיון הדירוג של השחקנים במשחק זה לפי הרווח
+        game_ranking.sort(key=lambda x: x[1], reverse=True)
+
+        # חישוב מיקום לכל שחקן במשחק הנוכחי
+        for rank, (name, profit) in enumerate(game_ranking, start=1):
+            player_summary[name]["total_rank"] += rank
+            if rank == 1:
+                player_summary[name]["first_place_wins"] += 1
+
+    # בניית הפלט לכל שחקן בנפרד
+    message = "סטטיסטיקות כלליות לשחקנים:\n"
+    for name, data in player_summary.items():
+        total_profit = data["total_profit"]
+        games_played = data["games_played"]
+        first_place_wins = data["first_place_wins"]
+        average_rank = data["total_rank"] / games_played if games_played > 0 else 0
+
+        message += f"\nסטטיסטיקות של {name}:\n"
+        message += f"סך רווחים/הפסדים: {total_profit} ₪\n"
+        message += f"מספר משחקים: {games_played}\n"
+        message += f"מספר פעמים במקום ראשון: {first_place_wins}\n"
+        message += f"מיקום ממוצע: {average_rank:.2f}\n"
+
+    # שליחת הפלט למשתמש
+    await update.message.reply_text(message)
+
+
 # הוספת הגדרות ל-main
 def main():
     application = Application.builder().token(TOKEN).build()
@@ -238,7 +294,8 @@ def main():
         CommandHandler("clear", clear),
         CommandHandler("debug", debug),
         CommandHandler("endgame", endgame),
-        CommandHandler("history", history)
+        CommandHandler("history", history),
+        CommandHandler("stats", stats)
     ]
     
     for handler in handlers:
