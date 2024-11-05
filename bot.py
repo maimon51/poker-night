@@ -2,7 +2,8 @@ import os
 from datetime import datetime
 from pymongo import MongoClient
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackContext, ContextTypes
+
 import json
 
 # הגדרות קבועות ומידע חסוי ממשתני סביבה
