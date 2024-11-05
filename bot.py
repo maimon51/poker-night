@@ -3,8 +3,8 @@ from datetime import datetime
 from pymongo import MongoClient
 from telegram import Update, error
 from telegram.ext import Application, CommandHandler, CallbackContext, ContextTypes
-
 import json
+from treys import Card, Deck, Evaluator
 
 # הגדרות קבועות ומידע חסוי ממשתני סביבה
 TOKEN = os.getenv("BOT_TOKEN")
@@ -98,12 +98,104 @@ def get_player_data(chat_id, game_id, name):
 
 async def send_message(update, message):
     """ שולחת הודעה לצ'אט הנוכחי """
-    await update.message.reply_text(message)
+    await update.message.reply_text(message)  
 
 # ==========================
 # פקודות בוט
 # ==========================
+async def hole(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Calculate both heads-up and multi-way win probability for hole cards and provide advice."""
+    try:
+        # Expect two cards in format like Qh, Qs, Ac, Kd, etc.
+        if len(context.args) != 2:
+            await update.message.reply_text("Usage: /hole <Card1> <Card2> (e.g., /hole Qh Qs)")
+            return
 
+        # Convert input strings to integer representations
+        card1 = Card.new(context.args[0])
+        card2 = Card.new(context.args[1])
+        hole_cards = [card1, card2]
+
+        # Fetch active game and count opponents
+        chat_id = update.effective_chat.id
+        game_id = get_or_create_active_game(chat_id)
+        opponent_count = players_collection.count_documents({"chat_id": chat_id, "game_id": game_id}) - 1  # excluding player
+
+        if opponent_count < 1:
+            await send_message(update, "There must be at least one opponent to calculate probabilities.")
+            return
+
+        # Monte Carlo simulation parameters
+        num_simulations = 10000
+
+        # Initialize Evaluator and Deck
+        evaluator = Evaluator()
+        deck = Deck()
+
+        # Define a function to calculate win probability with timing
+        def simulate_win_probability(opponent_count):
+            print(f"Starting simulation for {opponent_count} opponent(s)...")
+            start_time = datetime.now()
+            wins = 0
+            for _ in range(num_simulations):
+                deck.shuffle()
+                # Remove player's hole cards from the deck
+                deck.cards.remove(card1)
+                deck.cards.remove(card2)
+
+                # Deal opponent hole cards in pairs of two
+                opponent_hands = [deck.draw(2) for _ in range(opponent_count)]
+                
+                # Deal community cards as a batch of 5
+                community_cards = deck.draw(5)
+
+                # Evaluate player's hand
+                player_score = evaluator.evaluate(hole_cards, community_cards)
+
+                # Evaluate opponents' hands
+                opponent_scores = [evaluator.evaluate(hand, community_cards) for hand in opponent_hands]
+
+                # Determine if player wins
+                if all(player_score < score for score in opponent_scores):
+                    wins += 1
+
+                # Return cards to the deck
+                deck.cards.extend(hole_cards + community_cards)
+                for hand in opponent_hands:
+                    deck.cards.extend(hand)
+
+            win_probability = (wins / num_simulations) * 100
+            end_time = datetime.now()
+            print(f"Simulation for {opponent_count} opponent(s) completed. Time taken: {end_time - start_time}")
+            return win_probability
+
+        # Calculate heads-up probability (1 opponent)
+        heads_up_probability = simulate_win_probability(1)
+
+        # Calculate multi-way probability with actual number of opponents
+        multi_way_probability = simulate_win_probability(opponent_count)
+
+        # Provide advice based on multi-way probability
+        if multi_way_probability > 50:
+            advice = "Strong hand! Consider playing aggressively."
+        elif 30 < multi_way_probability <= 50:
+            advice = "Decent hand. Play cautiously."
+        else:
+            advice = "Weak hand. It might be best to fold."
+
+        # Format and send response message
+        message = (
+            f"Your Hole Cards: {Card.int_to_pretty_str(card1)} {Card.int_to_pretty_str(card2)}\n"
+            f"Number of Opponents: {opponent_count}\n\n"
+            f"Heads-Up Win Probability: ~{round(heads_up_probability)}%\n"
+            f"Win Probability with {opponent_count} Opponents: ~{round(multi_way_probability)}%\n"
+            f"\nAdvice: {advice}"
+        )
+        await send_message(update, message)
+
+    except Exception as e:
+        print(f"An error occurred in hole: {e}")
+        await send_message(update, f"Ooops: {e}")
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """ הוספת שחקנים עם כמות צ'יפים התחלתית """
     chat_id = update.effective_chat.id
@@ -345,7 +437,8 @@ def main():
         CommandHandler("debug", debug),
         CommandHandler("endgame", endgame),
         CommandHandler("history", history),
-        CommandHandler("stats", stats)
+        CommandHandler("stats", stats),
+        CommandHandler("hole", hole)
     ]
     
     for handler in handlers:
