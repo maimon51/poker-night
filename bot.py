@@ -60,13 +60,22 @@ print("Starting dummy server thread")
 threading.Thread(target=start_summary_server, daemon=True).start()
 print("Dummy server thread started")
 
+def initialize_game_start_date_if_needed(game_id):
+    """ מעדכנת את תאריך ההתחלה של המשחק אם לא הוגדר """
+    active_game = games_collection.find_one({"_id": game_id})
+    if active_game and active_game["start_date"] is None:
+        games_collection.update_one(
+            {"_id": game_id},
+            {"$set": {"start_date": datetime.now()}}
+        )
+        
 def get_or_create_active_game(chat_id):
     """ מחזירה את game_id של המשחק הפעיל בצ'אט או יוצרת חדש אם אין כזה """
     active_game = games_collection.find_one({"chat_id": chat_id, "status": "active"})
     if not active_game:
         game_id = games_collection.insert_one({
             "chat_id": chat_id,
-            "start_date": datetime.now(),
+            "start_date": None,
             "end_date": None,
             "status": "active"
         }).inserted_id
@@ -99,6 +108,9 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     game_id = get_or_create_active_game(chat_id)
 
+    # קריאה לפונקציית העזר לעדכון תאריך ההתחלה אם זהו הקנייה הראשונה
+    initialize_game_start_date_if_needed(game_id)
+    
     try:
         name, chips_bought = context.args[0], int(context.args[1])
         player = get_player_data(chat_id, game_id, name)
