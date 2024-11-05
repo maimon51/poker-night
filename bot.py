@@ -322,6 +322,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # הוספת הגדרות ל-main
 def main():
+    
+        
     application = Application.builder().token(TOKEN).build()
     handlers = [
         CommandHandler("buy", buy),
@@ -337,16 +339,20 @@ def main():
     for handler in handlers:
         application.add_handler(handler)
 
-    while True:
+    # Define error handler
+    def error_handler(update: Update, context: CallbackContext):
         try:
-            print("Bot polling")
-            application.run_polling(poll_interval=2.0, timeout=10)
-        except Conflict as e:
-            print("Conflict error: Another instance may be running. Retrying...")
-            time.sleep(3)
+            raise context.error
+        except telegram.error.Conflict:
+            print("Conflict error: Another instance is likely running.")
         except Exception as e:
-            print(f"Unexpected error: {e}")
-            break
-
+            print(f"An unexpected error occurred: {e}", exc_info=True)
+    
+    # Add the error handler to the application
+    application.add_error_handler(error_handler)
+    
+    print("Bot polling")
+    application.run_polling(poll_interval=2.0, timeout=10)
+    
 if __name__ == '__main__':
     main()
