@@ -336,8 +336,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # הוספת הגדרות ל-main
 def main():
-    
-        
     application = Application.builder().token(TOKEN).build()
     handlers = [
         CommandHandler("buy", buy),
@@ -354,7 +352,7 @@ def main():
         application.add_handler(handler)
 
     # Define error handler
-    def error_handler(update: Update, context: CallbackContext):
+    async def error_handler(update: Update, context: CallbackContext)-> None:
         print(f"An error occurred: {context.error}")
     
     # Add the error handler to the application
