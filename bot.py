@@ -1,7 +1,7 @@
 import os
 from datetime import datetime
 from pymongo import MongoClient
-from telegram import Update
+from telegram import Update, error
 from telegram.ext import Application, CommandHandler, CallbackContext, ContextTypes
 
 import json
@@ -344,7 +344,7 @@ def main():
     def error_handler(update: Update, context: CallbackContext):
         try:
             raise context.error
-        except telegram.error.Conflict:
+        except error.Conflict:
             print("Conflict error: Another instance is likely running.")
         except Exception as e:
             print(f"An unexpected error occurred: {e}", exc_info=True)
