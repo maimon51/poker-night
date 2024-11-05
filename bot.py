@@ -337,8 +337,16 @@ def main():
     for handler in handlers:
         application.add_handler(handler)
 
-    print("Bot polling")
-    application.run_polling(poll_interval=2.0, timeout=10)
+    while True:
+        try:
+            print("Bot polling")
+            application.run_polling(poll_interval=2.0, timeout=10)
+        except Conflict as e:
+            print("Conflict error: Another instance may be running. Retrying...")
+            time.sleep(3)
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+            break
 
 if __name__ == '__main__':
     main()
