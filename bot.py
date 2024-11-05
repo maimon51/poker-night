@@ -355,12 +355,7 @@ def main():
 
     # Define error handler
     def error_handler(update: Update, context: CallbackContext):
-        try:
-            raise context.error
-        except error.Conflict:
-            print("Conflict error: Another instance is likely running.")
-        except Exception as e:
-            print(f"An unexpected error occurred: {e}", exc_info=True)
+        print(f"An error occurred: {context.error}")
     
     # Add the error handler to the application
     application.add_error_handler(error_handler)
