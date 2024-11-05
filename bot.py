@@ -94,7 +94,7 @@ def end_current_game(chat_id):
 
 def get_player_data(chat_id, game_id, name):
     """ מחזירה נתוני שחקן במשחק הנוכחי אם קיים """
-    return players_collection.find_one({"chat_id": chat_id, "game_id": game_id, "name": name})
+    return players_collection.find_one({"chat_id": chat_id, "game_id": game_id, "name": name.lower()})
 
 async def send_message(update, message):
     """ שולחת הודעה לצ'אט הנוכחי """
@@ -105,36 +105,49 @@ async def send_message(update, message):
 # ==========================
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """ הוספת שחקן או עדכון קניית צ'יפים עבור שחקן קיים """
+    """ הוספת שחקנים עם כמות צ'יפים התחלתית """
     chat_id = update.effective_chat.id
     game_id = get_or_create_active_game(chat_id)
 
     # קריאה לפונקציית העזר לעדכון תאריך ההתחלה אם זהו הקנייה הראשונה
     initialize_game_start_date_if_needed(game_id)
-    
-    try:
-        name, chips_bought = context.args[0], int(context.args[1])
-        player = get_player_data(chat_id, game_id, name)
 
-        if player:
-            chips_total = chips_bought + player['chips_bought']
-            players_collection.update_one(
-                {"_id": player["_id"]},
-                {"$set": {"chips_bought": chips_total}}
-            )
-            message = f"שחקן {name} קיים, נוספו לו {chips_bought} צ'יפים (סה\"כ {chips_total})"
-        else:
-            players_collection.insert_one({
-                "chat_id": chat_id,
-                "game_id": game_id,
-                "name": name,
-                "chips_bought": chips_bought,
-                "chips_end": 0
-            })
-            message = f"שחקן {name} נוסף עם {chips_bought} צ'יפים"
-        await send_message(update, message)
+    try:
+        # The chip amount is now the first argument, followed by player names
+        chips_bought = int(context.args[0])
+        names = context.args[1:]  # All other arguments are considered player names
+
+        if not names:
+            await send_message(update, "שימוש: /buy <כמות צ'יפים> <שם1> <שם2> ...")
+            return
+
+        messages = []
+        for name in names:
+            player = get_player_data(chat_id, game_id, name)
+
+            if player:
+                # Update existing player's chips
+                chips_total = chips_bought + player['chips_bought']
+                players_collection.update_one(
+                    {"_id": player["_id"]},
+                    {"$set": {"chips_bought": chips_total}}
+                )
+                messages.append(f"שחקן {name} קיים, נוספו לו {chips_bought} צ'יפים (סה\"כ {chips_total})")
+            else:
+                # Add new player with initial chips
+                players_collection.insert_one({
+                    "chat_id": chat_id,
+                    "game_id": game_id,
+                    "name": name.lower(),
+                    "chips_bought": chips_bought,
+                    "chips_end": 0
+                })
+                messages.append(f"שחקן {name} נוסף עם {chips_bought} צ'יפים")
+
+        # Send a combined message for all players
+        await send_message(update, "\n".join(messages))
     except (IndexError, ValueError):
-        await send_message(update, "שימוש: /buy <שם> <כמות צ'יפים>")
+        await send_message(update, "שימוש: /buy <כמות צ'יפים> <שם1> <שם2> ...")
 
 async def end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """ עדכון צ'יפים סופי עבור שחקן """
