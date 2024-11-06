@@ -104,98 +104,276 @@ async def send_message(update, message):
 # פקודות בוט
 # ==========================
 async def hole(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Calculate both heads-up and multi-way win probability for hole cards and provide advice."""
-    try:
-        # Expect two cards in format like Qh, Qs, Ac, Kd, etc.
-        if len(context.args) != 2:
-            await update.message.reply_text("Usage: /hole <Card1> <Card2> (e.g., /hole Qh Qs)")
-            return
+    """Receive player's hole cards and start game tracking with initial probability calculation."""
+    if len(context.args) != 2:
+        await update.message.reply_text("שימוש: /hole <Card1> <Card2> (למשל /hole Qh Qs)")
+        return
 
-        # Convert input strings to integer representations
+    try:
         card1 = Card.new(context.args[0])
         card2 = Card.new(context.args[1])
-        hole_cards = [card1, card2]
+        game_id = get_or_create_active_game(update.effective_chat.id)
 
-        # Fetch active game and count opponents
-        chat_id = update.effective_chat.id
-        game_id = get_or_create_active_game(chat_id)
-        opponent_count = players_collection.count_documents({"chat_id": chat_id, "game_id": game_id}) - 1  # excluding player
-
-        if opponent_count < 1:
-            await send_message(update, "There must be at least one opponent to calculate probabilities.")
-            return
-
-        # Monte Carlo simulation parameters
-        num_simulations = 10000
-
-        # Initialize Evaluator and Deck
-        evaluator = Evaluator()
-        deck = Deck()
-
-        # Define a function to calculate win probability with timing
-        def simulate_win_probability(opponent_count):
-            print(f"Starting simulation for {opponent_count} opponent(s)...")
-            start_time = datetime.now()
-            wins = 0
-            for _ in range(num_simulations):
-                deck.shuffle()
-                # Remove player's hole cards from the deck
-                deck.cards.remove(card1)
-                deck.cards.remove(card2)
-
-                # Deal opponent hole cards in pairs of two
-                opponent_hands = [deck.draw(2) for _ in range(opponent_count)]
-                
-                # Deal community cards as a batch of 5
-                community_cards = deck.draw(5)
-
-                # Evaluate player's hand
-                player_score = evaluator.evaluate(hole_cards, community_cards)
-
-                # Evaluate opponents' hands
-                opponent_scores = [evaluator.evaluate(hand, community_cards) for hand in opponent_hands]
-
-                # Determine if player wins
-                if all(player_score < score for score in opponent_scores):
-                    wins += 1
-
-                # Return cards to the deck
-                deck.cards.extend(hole_cards + community_cards)
-                for hand in opponent_hands:
-                    deck.cards.extend(hand)
-
-            win_probability = (wins / num_simulations) * 100
-            end_time = datetime.now()
-            print(f"Simulation for {opponent_count} opponent(s) completed. Time taken: {end_time - start_time}")
-            return win_probability
-
-        # Calculate heads-up probability (1 opponent)
-        heads_up_probability = simulate_win_probability(1)
-
-        # Calculate multi-way probability with actual number of opponents
-        multi_way_probability = simulate_win_probability(opponent_count)
-
-        # Provide advice based on multi-way probability
-        if multi_way_probability > 50:
-            advice = "Strong hand! Consider playing aggressively."
-        elif 30 < multi_way_probability <= 50:
-            advice = "Decent hand. Play cautiously."
-        else:
-            advice = "Weak hand. It might be best to fold."
-
-        # Format and send response message
-        message = (
-            f"Your Hole Cards: {Card.int_to_pretty_str(card1)} {Card.int_to_pretty_str(card2)}\n"
-            f"Number of Opponents: {opponent_count}\n\n"
-            f"Heads-Up Win Probability: ~{round(heads_up_probability)}%\n"
-            f"Win Probability with {opponent_count} Opponents: ~{round(multi_way_probability)}%\n"
-            f"\nAdvice: {advice}"
+        # שמירת קלפי השחקן בבסיס הנתונים
+        games_collection.update_one(
+            {"_id": game_id},
+            {"$set": {"hole_cards": [card1, card2], "flop": [], "turn": None, "river": None}}
         )
-        await send_message(update, message)
+
+        # חישוב הסיכויים הראשוניים עם 5 קלפי קהילה אקראיים
+        await calculate_detailed_probability(update, [card1, card2], [])
 
     except Exception as e:
-        print(f"An error occurred in hole: {e}")
-        await send_message(update, f"Ooops: {e}")
+        await update.message.reply_text(f"שגיאה: {e}")
+
+async def flop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Receive flop cards and update them in the database."""
+    if len(context.args) != 3:
+        await update.message.reply_text("שימוש: /flop <Card1> <Card2> <Card3> (למשל /flop 7h 8d 9c)")
+        return
+
+    try:
+        game_id = get_or_create_active_game(update.effective_chat.id)
+        hole_cards = games_collection.find_one({"_id": game_id}).get("hole_cards")
+
+        if not hole_cards:
+            await update.message.reply_text("לא הגדרת עדיין את הקלפים שלך. השתמש ב-/hole.")
+            return
+
+        flop_cards = [Card.new(card) for card in context.args]
+
+        # שמירת קלפי הפלופ בלבד
+        games_collection.update_one(
+            {"_id": game_id},
+            {"$set": {"flop": flop_cards}}
+        )
+
+        await calculate_detailed_probability(update, hole_cards, flop_cards)
+
+    except Exception as e:
+        await update.message.reply_text(f"שגיאה: {e}")
+
+async def turn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Receive turn card and update it in the database."""
+    if len(context.args) != 1:
+        await update.message.reply_text("שימוש: /turn <Card> (למשל /turn Jh)")
+        return
+
+    try:
+        game_id = get_or_create_active_game(update.effective_chat.id)
+        game_data = games_collection.find_one({"_id": game_id})
+        hole_cards = game_data.get("hole_cards")
+        flop_cards = game_data.get("flop", [])
+
+        if not hole_cards or len(flop_cards) < 3:
+            await update.message.reply_text("חסר מידע. השתמש ב-/hole ו-/flop לפני השימוש ב-/turn.")
+            return
+
+        turn_card = Card.new(context.args[0])
+
+        # שמירת קלף הטרן בלבד
+        games_collection.update_one(
+            {"_id": game_id},
+            {"$set": {"turn": turn_card}}
+        )
+
+        await calculate_detailed_probability(update, hole_cards, flop_cards + [turn_card])
+
+    except Exception as e:
+        await update.message.reply_text(f"שגיאה: {e}")
+
+async def river(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Receive river card and update it in the database."""
+    if len(context.args) != 1:
+        await update.message.reply_text("שימוש: /river <Card> (למשל /river Qc)")
+        return
+
+    try:
+        game_id = get_or_create_active_game(update.effective_chat.id)
+        game_data = games_collection.find_one({"_id": game_id})
+        hole_cards = game_data.get("hole_cards")
+        flop_cards = game_data.get("flop", [])
+        turn_card = game_data.get("turn")
+
+        if not hole_cards or len(flop_cards) < 3 or not turn_card:
+            await update.message.reply_text("חסר מידע. השתמש ב-/hole, /flop ו-/turn לפני השימוש ב-/river.")
+            return
+
+        river_card = Card.new(context.args[0])
+
+        # שמירת קלף הריבר בלבד
+        games_collection.update_one(
+            {"_id": game_id},
+            {"$set": {"river": river_card}}
+        )
+
+        await calculate_detailed_probability(update, hole_cards, flop_cards + [turn_card, river_card])
+
+    except Exception as e:
+        await update.message.reply_text(f"שגיאה: {e}")
+
+def create_probability_message(hole_cards, community_cards, hand_stats, win_probability, single_win_probability):
+    """Generate a formatted message with game statistics and probabilities."""
+    
+    # הצגת קלפי השחקן וקלפי הקהילה בפורמט פשוט
+    hole_cards_display = f"{Card.int_to_pretty_str(hole_cards[0])} {Card.int_to_pretty_str(hole_cards[1])}"
+    community_cards_display = ' '.join([Card.int_to_pretty_str(card) for card in community_cards])
+
+    # עיצוב הפלט להודעה
+    message = (
+        f"קלפי השחקן: {hole_cards_display}\n"
+        f"קלפי הקהילה: {community_cards_display}\n"
+    )
+    
+    # טבלת סיכויי ידיים עבור כל היריבים
+    message += f"\n{'Hand':<15} | {'Player':<10} | {'Opponents'}\n"
+    message += "════════════════\n"
+    for hand_type, (player_percent, opponent_percent, _) in hand_stats.items():
+        message += f"{hand_type:<15} | {player_percent:>6.2f}% | {opponent_percent:>6.2f}%\n"
+
+    # סיכוי לניצחון, תיקו והפסד עבור כלל היריבים
+    message += f"✅ סיכוי לניצחון: {win_probability:.2f}%\n\n"
+    
+    # טבלת סיכויי ידיים מול יריב אחד בלבד
+    message += f"{'Hand':<15} | {'Player':<10} | {'Opponent'}\n"
+    message += "════════════════\n"
+    for hand_type, (player_percent, _, single_opponent_percent) in hand_stats.items():
+        message += f"{hand_type:<15} | {player_percent:>6.2f}% | {single_opponent_percent:>6.2f}%\n"
+
+    # סיכוי לניצחון, תיקו והפסד עבור יריב אחד בלבד
+    message += f"✅ סיכוי לניצחון: {single_win_probability:.2f}%\n\n"
+
+    return message
+
+async def calculate_detailed_probability(update, hole_cards, community_cards):
+    """Calculate win probability with detailed breakdown based on hand types."""
+    evaluator = Evaluator()
+    opponent_count = players_collection.count_documents(
+        {"chat_id": update.effective_chat.id, "game_id": get_or_create_active_game(update.effective_chat.id)}
+    ) - 1
+
+    if opponent_count < 1:
+        await send_message(update, "יש לפחות יריב אחד לחישוב הסיכויים.")
+        return
+
+    num_simulations = 2000
+    hand_counts = {
+        "Royal Flush": 0,
+        "Straight Flush": 0,
+        "Four of a Kind": 0,
+        "Full House": 0,
+        "Flush": 0,
+        "Straight": 0,
+        "Three of a Kind": 0,
+        "Two Pair": 0,
+        "Pair": 0,
+        "High Card": 0
+    }
+    
+    opponent_hand_counts = hand_counts.copy()
+    single_opponent_hand_counts = hand_counts.copy()  # חדש: תוצאות ליריב אחד
+    player_wins = 0
+    single_opponent_wins = 0
+
+    for _ in range(num_simulations):
+        try:
+            # הגדרת חבילת קלפים עבור סימולציה מול כל היריבים
+            deck = Deck()
+            deck.cards = [card for card in deck.cards if card not in hole_cards + community_cards]
+
+            # שליפת קלפים לקהילה
+            community_draw = deck.draw(5 - len(community_cards))
+            full_community_cards = community_cards + community_draw
+
+            # חישוב יד השחקן
+            player_score = evaluator.evaluate(hole_cards, full_community_cards)
+            player_hand_type = evaluator.get_rank_class(player_score)
+            hand_counts[evaluator.class_to_string(player_hand_type)] += 1
+            
+            # חישוב מול כל היריבים
+            opponent_hands = [deck.draw(2) for _ in range(opponent_count)]
+            opponent_best_score = min(evaluator.evaluate(hand, full_community_cards) for hand in opponent_hands)
+            opponent_best_hand_type = evaluator.get_rank_class(opponent_best_score)
+            opponent_hand_counts[evaluator.class_to_string(opponent_best_hand_type)] += 1
+
+            if player_score < opponent_best_score:
+                player_wins += 1
+
+            # סימולציה נפרדת מול יריב אחד בלבד
+            single_opponent_deck = Deck()
+            single_opponent_deck.cards = [card for card in single_opponent_deck.cards if card not in hole_cards + community_cards]
+            single_opponent_hand = single_opponent_deck.draw(2)
+            single_opponent_score = evaluator.evaluate(single_opponent_hand, full_community_cards)
+            single_opponent_hand_type = evaluator.get_rank_class(single_opponent_score)
+            single_opponent_hand_counts[evaluator.class_to_string(single_opponent_hand_type)] += 1
+
+            if player_score < single_opponent_score:
+                single_opponent_wins += 1
+        except Exception as e:
+            print(f"Error in simulation iteration: {e}")
+
+        
+    # חישוב אחוזים לכל יד – הסינון מתבצע בשלב ההדפסה בלבד
+    hand_stats = {}
+    for hand_type in hand_counts:
+        player_percent = (hand_counts[hand_type] / num_simulations) * 100
+        opponent_percent = (opponent_hand_counts[hand_type] / num_simulations) * 100
+        single_opponent_percent = (single_opponent_hand_counts[hand_type] / num_simulations) * 100
+
+        # סינון תוצאות קרובות ל-0% בשלב ההדפסה
+        if player_percent > 0.01 or opponent_percent > 0.01 or single_opponent_percent > 0.01:
+            hand_stats[hand_type] = (player_percent, opponent_percent, single_opponent_percent)
+
+    # אחוזי ניצחון ותיקו עבור כל היריבים ועבור יריב אחד
+    win_probability = (player_wins / num_simulations) * 100
+    single_win_probability = (single_opponent_wins / num_simulations) * 100
+
+    message = create_probability_message(
+        hole_cards, community_cards, hand_stats,
+        win_probability, single_win_probability)
+    await send_message(update, message)
+    
+async def calculate_probability(update, hole_cards, community_cards):
+    """Calculate win probability based on current community cards and hole cards."""
+    evaluator = Evaluator()
+    deck = Deck()
+    opponent_count = players_collection.count_documents(
+        {"chat_id": update.effective_chat.id, "game_id": get_or_create_active_game(update.effective_chat.id)}
+    ) - 1
+
+    if opponent_count < 1:
+        await send_message(update, "יש לפחות יריב אחד לחישוב הסיכויים.")
+        return
+
+    num_simulations = 10000
+    wins = 0
+
+    for _ in range(num_simulations):
+        deck.shuffle()
+        deck.cards = [card for card in deck.cards if card not in hole_cards + community_cards]
+        
+        opponent_hands = [deck.draw(2) for _ in range(opponent_count)]
+        community_draw = deck.draw(5 - len(community_cards))
+        full_community_cards = community_cards + community_draw
+
+        player_score = evaluator.evaluate(hole_cards, full_community_cards)
+        opponent_scores = [evaluator.evaluate(hand, full_community_cards) for hand in opponent_hands]
+        
+        if all(player_score < score for score in opponent_scores):
+            wins += 1
+
+    win_probability = (wins / num_simulations) * 100
+    stage = {0: "Hole Cards", 3: "Flop", 4: "Turn", 5: "River"}[len(community_cards)]
+
+    message = (
+        f"שלב: {stage}\n"
+        f"קלפי השחקן: {Card.int_to_pretty_str(hole_cards[0])} {Card.int_to_pretty_str(hole_cards[1])}\n"
+        f"קלפי הקהילה: {' '.join([Card.int_to_pretty_str(card) for card in community_cards])}\n"
+        f"סיכוי לניצחון ראש בראש: ~{round(win_probability)}%"
+    )
+
+    await send_message(update, message)
+    
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """ הוספת שחקנים עם כמות צ'יפים התחלתית """
     chat_id = update.effective_chat.id
@@ -313,7 +491,6 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await send_message(update, message + transfer_message)
 
-
 async def endgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     game_id = games_collection.find_one({"chat_id": chat_id, "status": "active"})
@@ -347,7 +524,6 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message += "דירוג לא זמין למשחק זה.\n"
         
     await update.message.reply_text(message)
-
         
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
@@ -368,7 +544,58 @@ async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # הצגת נתוני שחקנים בצ'אט הנוכחי בלבד
     for player in players_collection.find({"chat_id": chat_id, "game_id": game_id}):
         message += f"שחקן {player['name']} קנה {player['chips_bought']} צ'יפים וסיים עם {player['chips_end']} צ'יפים\n"
+    
+    # הוספת מידע על מצב המשחק הנוכחי
+    game_data = games_collection.find_one({"_id": game_id})
+    if game_data:
+        # קלפי השחקן
+        hole_cards = game_data.get("hole_cards", [])
+        if hole_cards:
+            hole_cards_str = " ".join([Card.int_to_pretty_str(card) for card in hole_cards])
+            message += f"\nקלפי השחקן: {hole_cards_str}\n"
+        else:
+            message += "\nקלפי השחקן לא הוגדרו עדיין.\n"
+
+        # קלפי הפלופ
+        flop_cards = game_data.get("flop", [])
+        if flop_cards:
+            flop_cards_str = " ".join([Card.int_to_pretty_str(card) for card in flop_cards])
+            message += f"קלפי הפלופ: {flop_cards_str}\n"
+        else:
+            message += "קלפי הפלופ לא הוגדרו עדיין.\n"
+
+        # קלף הטרן
+        turn_card = game_data.get("turn")
+        if turn_card:
+            turn_card_str = Card.int_to_pretty_str(turn_card)
+            message += f"קלף הטרן: {turn_card_str}\n"
+        else:
+            message += "קלף הטרן לא הוגדר עדיין.\n"
+
+        # קלף הריבר
+        river_card = game_data.get("river")
+        if river_card:
+            river_card_str = Card.int_to_pretty_str(river_card)
+            message += f"קלף הריבר: {river_card_str}\n"
+        else:
+            message += "קלף הריבר לא הוגדר עדיין.\n"
+
+        # שלב המשחק (לפי הקלפים שהוגדרו עד כה)
+        if river_card:
+            stage = "ריבר"
+        elif turn_card:
+            stage = "טרן"
+        elif flop_cards:
+            stage = "פלופ"
+        else:
+            stage = "התחלה"
+        
+        message += f"שלב המשחק: {stage}\n"
+    else:
+        message += "אין מידע על המשחק הנוכחי.\n"
+
     await update.message.reply_text(message)
+
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -438,7 +665,10 @@ def main():
         CommandHandler("endgame", endgame),
         CommandHandler("history", history),
         CommandHandler("stats", stats),
-        CommandHandler("hole", hole)
+        CommandHandler("hole", hole),
+        CommandHandler("flop", flop),
+        CommandHandler("turn", turn),
+        CommandHandler("river", river)
     ]
     
     for handler in handlers:
