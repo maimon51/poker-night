@@ -21,5 +21,5 @@ RUN poetry show
 
 COPY . .
 
-# פקודת הרצה ראשית
+# פקודת הרצה ראשית.
 CMD [ "python", "bot.py"]
