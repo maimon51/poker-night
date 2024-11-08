@@ -206,20 +206,25 @@ def create_probability_message(hole_cards, community_cards, hand_stats, win_prob
         f"קלפי הקהילה: {community_cards_display}\n"
     )
     
-    # טבלת סיכויי ידיים עבור כל היריבים
-    message += f"\n{'Hand':<15} | {'Player':<10} | {'Opponents'}\n"
-    message += "════════════════\n"
-    for hand_type, (player_percent, opponent_percent, _) in hand_stats.items():
-        message += f"{hand_type:<15} | {player_percent:>6.2f}% | {opponent_percent:>6.2f}%\n"
+    if win_probability is not None:
+        # טבלת סיכויי ידיים עבור כל היריבים
+        message += f"\n{'Hand':<15} | {'Player':<10} | {'Opponents'}\n"
+        message += "════════════════\n"
+        for hand_type, (player_percent, opponent_percent, _) in hand_stats.items():
+            player_display = f"{player_percent:>6.2f}%" if player_percent > 0 else "      "
+            opponent_display = f"{opponent_percent:>6.2f}%" if opponent_percent > 0 else "      "
+            message += f"{hand_type:<15} | {player_display} | {opponent_display}\n"
 
-    # סיכוי לניצחון, תיקו והפסד עבור כלל היריבים
-    message += f"✅ סיכוי לניצחון: {win_probability:.2f}%\n\n"
-    
+        # סיכוי לניצחון, תיקו והפסד עבור כלל היריבים
+        message += f"✅ סיכוי לניצחון: {win_probability:.2f}%\n\n"
+
     # טבלת סיכויי ידיים מול יריב אחד בלבד
     message += f"{'Hand':<15} | {'Player':<10} | {'Opponent'}\n"
     message += "════════════════\n"
     for hand_type, (player_percent, _, single_opponent_percent) in hand_stats.items():
-        message += f"{hand_type:<15} | {player_percent:>6.2f}% | {single_opponent_percent:>6.2f}%\n"
+        player_display = f"{player_percent:>6.2f}%" if player_percent > 0 else "      "
+        single_opponent_display = f"{single_opponent_percent:>6.2f}%" if single_opponent_percent > 0 else "      "
+        message += f"{hand_type:<15} | {player_display} | {single_opponent_display}\n"
 
     # סיכוי לניצחון, תיקו והפסד עבור יריב אחד בלבד
     message += f"✅ סיכוי לניצחון: {single_win_probability:.2f}%\n\n"
@@ -251,9 +256,12 @@ async def calculate_detailed_probability(update, hole_cards, community_cards):
         "High Card": 0
     }
     
-    opponent_hand_counts = hand_counts.copy()
-    single_opponent_hand_counts = hand_counts.copy()  # חדש: תוצאות ליריב אחד
-    player_wins = 0
+    # בדיקה אם יש יותר מיריב אחד
+    if opponent_count > 1:
+        opponent_hand_counts = hand_counts.copy()
+        player_wins = 0
+
+    single_opponent_hand_counts = hand_counts.copy()
     single_opponent_wins = 0
 
     for _ in range(num_simulations):
@@ -271,14 +279,15 @@ async def calculate_detailed_probability(update, hole_cards, community_cards):
             player_hand_type = evaluator.get_rank_class(player_score)
             hand_counts[evaluator.class_to_string(player_hand_type)] += 1
             
-            # חישוב מול כל היריבים
-            opponent_hands = [deck.draw(2) for _ in range(opponent_count)]
-            opponent_best_score = min(evaluator.evaluate(hand, full_community_cards) for hand in opponent_hands)
-            opponent_best_hand_type = evaluator.get_rank_class(opponent_best_score)
-            opponent_hand_counts[evaluator.class_to_string(opponent_best_hand_type)] += 1
+            # חישוב מול כל היריבים אם יש יותר מיריב אחד
+            if opponent_count > 1:
+                opponent_hands = [deck.draw(2) for _ in range(opponent_count)]
+                opponent_best_score = min(evaluator.evaluate(hand, full_community_cards) for hand in opponent_hands)
+                opponent_best_hand_type = evaluator.get_rank_class(opponent_best_score)
+                opponent_hand_counts[evaluator.class_to_string(opponent_best_hand_type)] += 1
 
-            if player_score < opponent_best_score:
-                player_wins += 1
+                if player_score < opponent_best_score:
+                    player_wins += 1
 
             # סימולציה נפרדת מול יריב אחד בלבד
             single_opponent_deck = Deck()
@@ -293,12 +302,11 @@ async def calculate_detailed_probability(update, hole_cards, community_cards):
         except Exception as e:
             print(f"Error in simulation iteration: {e}")
 
-        
-    # חישוב אחוזים לכל יד – הסינון מתבצע בשלב ההדפסה בלבד
+    # חישוב אחוזים לכל יד
     hand_stats = {}
     for hand_type in hand_counts:
         player_percent = (hand_counts[hand_type] / num_simulations) * 100
-        opponent_percent = (opponent_hand_counts[hand_type] / num_simulations) * 100
+        opponent_percent = (opponent_hand_counts[hand_type] / num_simulations) * 100 if opponent_count > 1 else 0
         single_opponent_percent = (single_opponent_hand_counts[hand_type] / num_simulations) * 100
 
         # סינון תוצאות קרובות ל-0% בשלב ההדפסה
@@ -306,7 +314,7 @@ async def calculate_detailed_probability(update, hole_cards, community_cards):
             hand_stats[hand_type] = (player_percent, opponent_percent, single_opponent_percent)
 
     # אחוזי ניצחון ותיקו עבור כל היריבים ועבור יריב אחד
-    win_probability = (player_wins / num_simulations) * 100
+    win_probability = (player_wins / num_simulations) * 100 if opponent_count > 1 else None
     single_win_probability = (single_opponent_wins / num_simulations) * 100
 
     message = create_probability_message(
