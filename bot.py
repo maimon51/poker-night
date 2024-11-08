@@ -43,9 +43,9 @@ def start_summary_server():
     print("Starting summary server on port 8000")
     httpd.serve_forever()
 
-# ==========================
-# Data access functions
-# ==========================
+# ========================================
+# Data access and general utlity functions
+# ========================================
 def get_summary():
     """ פונקציה שמחזירה את מספר המשחקים, הצ'אטים והשחקנים """
     total_games = games_collection.count_documents({})
@@ -95,6 +95,101 @@ async def send_message(update, message):
     """ שולחת הודעה לצ'אט הנוכחי """
     await update.message.reply_text(message)  
 
+def all_players_finished(game_id):
+    """ בודקת אם לכל השחקנים במשחק הנוכחי יש כמות צ'יפים סופית """
+    unfinished_count = players_collection.count_documents({"game_id": game_id, "chips_end": None})
+    print("unfinished_count = ", unfinished_count)
+    return unfinished_count == 0
+
+def is_total_consistent(game_id, tolerance=0.05):
+    """ בודקת האם סכום הקניות תואם לסכום הצ'יפים הסופי עם סטייה מותרת """
+    # חישוב סך כל הצ'יפים שנקנו
+    total_bought_cursor = players_collection.aggregate([
+        {"$match": {"game_id": game_id}},
+        {"$group": {"_id": None, "total_bought": {"$sum": "$chips_bought"}}}
+    ])
+    total_bought_result = list(total_bought_cursor)
+    total_bought = total_bought_result[0]["total_bought"] if total_bought_result else 0
+
+    # חישוב סך כל הצ'יפים הסופיים
+    total_end_cursor = players_collection.aggregate([
+        {"$match": {"game_id": game_id, "chips_end": {"$ne": None}}},
+        {"$group": {"_id": None, "total_end": {"$sum": "$chips_end"}}}
+    ])
+    total_end_result = list(total_end_cursor)
+    total_end = total_end_result[0]["total_end"] if total_end_result else 0
+
+    # בדיקת התאמה עם סטייה מותרת
+    return abs(total_bought - total_end) <= total_bought * tolerance
+
+async def display_summary(update: Update, ratio: float):
+    """מחשב ומציג סיכום המשחק בהתאם ליחס ההמרה שניתן"""
+    chat_id = update.effective_chat.id
+    game_id = get_or_create_active_game(chat_id)
+
+    message = f'סיכום המשחק:\nיחס המרה ₪{ratio}/1000\n'
+    players_data = []
+
+    # חישוב רווחים והפסדים עבור כל שחקן
+    for player in players_collection.find({"chat_id": chat_id, "game_id": game_id}):
+        name = player['name']
+        chips_bought, chips_end = player.get('chips_bought'), player.get('chips_end')
+        
+        if chips_bought is None or chips_end is None:
+            await send_message(update, f"שחקן {name} עדיין לא השלים את הנתונים")
+            return
+        
+        difference = chips_end - chips_bought
+        amount = difference * (ratio / 1000)
+        players_data.append({'name': name, 'amount': amount})
+
+        message += f"{name} צריך {'לקבל' if amount > 0 else 'לשלם'} {abs(amount):.2f} ₪\n"
+    
+    # שמירת דירוג המשחק במסד הנתונים
+    sorted_players_data = sorted(players_data, key=lambda x: x['amount'], reverse=True)
+    games_collection.update_one(
+        {"_id": game_id},
+        {"$set": {"ranking": sorted_players_data}}
+    )
+    
+    # חישוב העברות כספיות
+    transfer_message = "\nהעברות כספיות:\n"
+    debtors = [p for p in players_data if p['amount'] < 0]
+    creditors = [p for p in players_data if p['amount'] > 0]
+    
+    while debtors and creditors:
+        debtor = debtors.pop()
+        creditor = creditors.pop()
+        transfer_amount = min(abs(debtor['amount']), creditor['amount'])
+        
+        # הודעה על העברה
+        transfer_message += f"{debtor['name']} צריך להעביר {transfer_amount:.2f} ₪ ל{creditor['name']}\n"
+        
+        # עדכון הסכומים
+        debtor['amount'] += transfer_amount
+        creditor['amount'] -= transfer_amount
+
+        # החזרת השחקנים לרשימות אם עדיין יש להם חוב/זכות
+        if debtor['amount'] < 0:
+            debtors.append(debtor)
+        if creditor['amount'] > 0:
+            creditors.append(creditor)
+
+    # שליחת הודעת הסיכום עם העברות כספיות
+    await send_message(update, message + transfer_message)
+
+async def endgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    game_id = games_collection.find_one({"chat_id": chat_id, "status": "active"})
+    
+    if not game_id:
+        await update.message.reply_text("אין משחק פעיל לסיים.")
+        return
+    
+    # סיום המשחק הפעיל
+    end_current_game(chat_id)
+    await update.message.reply_text("המשחק הנוכחי הסתיים ונשמר בהיסטוריה.")
+    
 # ==========================
 # probability calculations
 # ==========================
@@ -220,7 +315,7 @@ async def calculate_detailed_probability(update, hole_cards, community_cards):
     await send_message(update, message)
   
 # ==========================
-# פקודות בוט
+# BOT handlers for commands
 # ==========================
 async def hole(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Receive player's hole cards and start game tracking with initial probability calculation."""
@@ -331,156 +426,9 @@ async def river(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         await update.message.reply_text(f"שגיאה: {e}")
  
-async def handle_buy(update: Update, message_text: str) -> None:
-    """פונקציה לטיפול בקניית צ'יפים עם פורמט '+<כמות> <שמות>'"""
-    chat_id = update.effective_chat.id
-    game_id = get_or_create_active_game(chat_id)
-    initialize_game_start_date_if_needed(game_id)
-
-    try:
-        # מסירים את התו `+` ומחלקים
-        parts = message_text[1:].split()
-        chips_bought = int(parts[0])
-        names = parts[1:]
-
-        if not names:
-            await send_message(update, "שימוש: +<כמות צ'יפים> <שם1> <שם2> ...")
-            return
-
-        messages = []
-        for name in names:
-            player = get_player_data(chat_id, game_id, name)
-            if player:
-                chips_total = chips_bought + player['chips_bought']
-                players_collection.update_one(
-                    {"_id": player["_id"]},
-                    {"$set": {"chips_bought": chips_total}}
-                )
-                messages.append(f"שחקן {name} קיים, נוספו לו {chips_bought} צ'יפים (סה\"כ {chips_total})")
-            else:
-                players_collection.insert_one({
-                    "chat_id": chat_id,
-                    "game_id": game_id,
-                    "name": name.lower(),
-                    "chips_bought": chips_bought,
-                    "chips_end": 0
-                })
-                messages.append(f"שחקן {name} נוסף עם {chips_bought} צ'יפים")
-
-        await send_message(update, "\n".join(messages))
-    except (IndexError, ValueError):
-        await send_message(update, "שימוש: +<כמות צ'יפים> <שם1> <שם2> ...")
-
-async def handle_end(update: Update, message_text: str) -> None:
-    """פונקציה לטיפול בסיום עם פורמט '<שם>=<כמות>'"""
-    chat_id = update.effective_chat.id
-    game_id = get_or_create_active_game(chat_id)
-
-    try:
-        # חלוקת ההודעה לפי `=`
-        name, chips_end = message_text.split('=')
-        name = name.strip()
-        chips_end = int(chips_end.strip())
-        
-        player = get_player_data(chat_id, game_id, name)
-
-        if player:
-            players_collection.update_one(
-                {"_id": player["_id"]},
-                {"$set": {"chips_end": chips_end}}
-            )
-            message = f"שחקן {name} סיים עם {chips_end} צ'יפים"
-        else:
-            message = f"שחקן {name} לא קיים"
-        await send_message(update, message)
-    except (IndexError, ValueError):
-        await send_message(update, "שימוש: <שם>=<כמות צ'יפים סופית>")
-
-async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    game_id = get_or_create_active_game(chat_id)
-
-    if len(context.args) == 0:
-        await send_message(update, "שימוש: /summary <יחס ההמרה>")
-        return
-
-    ratio = float(context.args[0])
-    message = f'סיכום המשחק:\nיחס ההמרה ₪{ratio}/1000\n'
-    players_data = []
-
-    # חישוב רווחים והפסדים
-    for player in players_collection.find({"chat_id": chat_id, "game_id": game_id}):
-        name = player['name']
-        chips_bought, chips_end = player.get('chips_bought'), player.get('chips_end')
-        
-        if chips_bought is None or chips_end is None:
-            await send_message(update, f"שחקן {name} עדיין לא השלים את הנתונים")
-            return
-        
-        difference = chips_end - chips_bought
-        amount = difference * (ratio / 1000)
-        players_data.append({'name': name, 'amount': amount})
-
-        message += f"{name} צריך {'לקבל' if amount > 0 else 'לשלם'} {abs(amount)} ₪\n"
-    
-    # שמירת דירוג המשחק במסד הנתונים
-    sorted_players_data = sorted(players_data, key=lambda x: x['amount'], reverse=True)
-    games_collection.update_one(
-        {"_id": game_id},
-        {"$set": {"ranking": sorted_players_data}}
-    )
-    
-    # העברות כספיות
-    transfer_message = "\nהעברות כספיות:\n"
-    debtors = [p for p in players_data if p['amount'] < 0]
-    creditors = [p for p in players_data if p['amount'] > 0]
-    
-    while debtors and creditors:
-        debtor, creditor = debtors.pop(), creditors.pop()
-        transfer_amount = min(abs(debtor['amount']), creditor['amount'])
-        transfer_message += f"{debtor['name']} צריך להעביר {transfer_amount} ₪ ל{creditor['name']}\n"
-        debtor['amount'] += transfer_amount
-        creditor['amount'] -= transfer_amount
-
-        if debtor['amount'] < 0: debtors.append(debtor)
-        if creditor['amount'] > 0: creditors.append(creditor)
-
-    await send_message(update, message + transfer_message)
-
-async def endgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    game_id = games_collection.find_one({"chat_id": chat_id, "status": "active"})
-    
-    if not game_id:
-        await update.message.reply_text("אין משחק פעיל לסיים.")
-        return
-    
-    # סיום המשחק הפעיל
-    end_current_game(chat_id)
-    await update.message.reply_text("המשחק הנוכחי הסתיים ונשמר בהיסטוריה.")
-
-async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    games = games_collection.find({"chat_id": chat_id}).sort("start_date", -1)
-    message = "היסטוריית משחקים:\n"
-    count = 1
-    for game in games:
-        start_date = game["start_date"].strftime("%Y-%m-%d %H:%M")
-        end_date = game.get("end_date", "לא ידוע").strftime("%Y-%m-%d %H:%M") if game.get("end_date") else "לא ידוע"
-        message += f"\nמשחק: {count}\nתאריך התחלה: {start_date}\nתאריך סיום: {end_date}\n"
-        count += 1
-        # הצגת דירוג אם קיים
-        if 'ranking' in game:
-            message += "דירוג:\n"
-            for player_data in game['ranking']:
-                name = player_data['name']
-                amount = player_data['amount']
-                message += f"{name} {'הרוויח' if amount > 0 else 'הפסיד'} {abs(amount)} ₪\n"
-        else:
-            message += "דירוג לא זמין למשחק זה.\n"
-        
-    await update.message.reply_text(message)
-        
+# =================================
+# BOT utility and summary commands
+# =================================
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     game_id = get_or_create_active_game(chat_id)
@@ -615,29 +563,151 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # שליחת הפלט למשתמש
     await update.message.reply_text(message)
+       
+async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    games = games_collection.find({"chat_id": chat_id}).sort("start_date", -1)
+    message = "היסטוריית משחקים:\n"
+    count = 1
+    for game in games:
+        start_date = game["start_date"].strftime("%Y-%m-%d %H:%M")
+        end_date = game.get("end_date", "לא ידוע").strftime("%Y-%m-%d %H:%M") if game.get("end_date") else "לא ידוע"
+        message += f"\nמשחק: {count}\nתאריך התחלה: {start_date}\nתאריך סיום: {end_date}\n"
+        count += 1
+        # הצגת דירוג אם קיים
+        if 'ranking' in game:
+            message += "דירוג:\n"
+            for player_data in game['ranking']:
+                name = player_data['name']
+                amount = player_data['amount']
+                message += f"{name} {'הרוויח' if amount > 0 else 'הפסיד'} {abs(amount)} ₪\n"
+        else:
+            message += "דירוג לא זמין למשחק זה.\n"
+        
+    await update.message.reply_text(message)
+ 
+ 
+# ==========================
+# Bot handler utilities
+# ==========================
+async def handle_buy(update: Update, message_text: str) -> None:
+    """פונקציה לטיפול בקניית צ'יפים עם פורמט '+<כמות> <שמות>'"""
+    chat_id = update.effective_chat.id
+    game_id = get_or_create_active_game(chat_id)
+    initialize_game_start_date_if_needed(game_id)
 
+    try:
+        # מסירים את התו `+` ומחלקים
+        parts = message_text[1:].split()
+        chips_bought = int(parts[0])
+        names = parts[1:]
+
+        if not names:
+            await send_message(update, "שימוש: +<כמות צ'יפים> <שם1> <שם2> ...")
+            return
+
+        messages = []
+        for name in names:
+            player = get_player_data(chat_id, game_id, name)
+            if player:
+                chips_total = chips_bought + player['chips_bought']
+                players_collection.update_one(
+                    {"_id": player["_id"]},
+                    {"$set": {"chips_bought": chips_total}}
+                )
+                messages.append(f"שחקן {name} קיים, נוספו לו {chips_bought} צ'יפים (סה\"כ {chips_total})")
+            else:
+                players_collection.insert_one({
+                    "chat_id": chat_id,
+                    "game_id": game_id,
+                    "name": name.lower(),
+                    "chips_bought": chips_bought,
+                    "chips_end": 0
+                })
+                messages.append(f"שחקן {name} נוסף עם {chips_bought} צ'יפים")
+
+        await send_message(update, "\n".join(messages))
+    except (IndexError, ValueError):
+        await send_message(update, "שימוש: +<כמות צ'יפים> <שם1> <שם2> ...")
+
+async def handle_end(update: Update, message_text: str, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Process end command in the format '<name>=<amount>'."""
+    global main_message_handler
+    chat_id = update.effective_chat.id
+    game_id = get_or_create_active_game(chat_id)
+
+    try:
+        # Parse message text for end command format
+        name, chips_end = message_text.split('=')
+        name, chips_end = name.strip(), int(chips_end.strip())
+        
+        player = get_player_data(chat_id, game_id, name)
+
+        if player:
+            players_collection.update_one({"_id": player["_id"]}, {"$set": {"chips_end": chips_end}})
+            await send_message(update, f"שחקן {name} סיים עם {chips_end} צ'יפים")
+        else:
+            await send_message(update, f"שחקן {name} לא קיים")
+            return
+        
+        # Check if all players have finished and totals are consistent
+        if all_players_finished(game_id) and is_total_consistent(game_id):
+            # כל השחקנים סיימו והסכום תואם - בקשה ליחס המרה
+            await send_message(update, "כל השחקנים סיימו את המשחק. אנא הזן את יחס ההמרה (מחיר קניית אלף ציפים):")
+            
+            # הפעלת מצב המתנה ליחס המרה
+            context.user_data["awaiting_ratio"] = True
+            
+        elif all_players_finished(game_id) and not is_total_consistent(game_id):
+            # כל השחקנים סיימו אך הסכומים לא תואמים - הודעת שגיאה
+            await send_message(update, "שגיאה: סכום הצ'יפים שנקנו אינו תואם לסכום שמסיים את המשחק.")
+            
+            
+    except (IndexError, ValueError):
+        await send_message(update, "שימוש: <שם>=<כמות צ'יפים סופית>")
+
+ 
+# ==========================
+# Message Handler Main
+# ==========================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Main handler for regular messages"""
     message_text = update.message.text.strip()
-    
+
+    # בדיקה אם מצפים ליחס המרה
+    if context.user_data.get("awaiting_ratio"):
+        try:
+            # ניסיון להמיר את הטקסט למספר ליחס ההמרה
+            ratio = float(message_text)
+            await display_summary(update, ratio)
+            await endgame(update, context)
+        except ValueError:
+            await send_message(update, "אנא הזן מספר תקין עבור יחס ההמרה.")
+        finally:
+            # ניקוי מצב ההמתנה ליחס המרה כדי להחזיר את השליטה להנדלר הרגיל
+            context.user_data.pop("awaiting_ratio", None)
+        return
+
+    # תהליך רגיל של זיהוי פקודות
     if message_text.startswith("+"):  # זיהוי פקודת קנייה בפורמט `+<כמות> <שמות>`
         await handle_buy(update, message_text)
     elif "=" in message_text:  # זיהוי פקודת סיום בפורמט `<שם>=<כמות>`
-        await handle_end(update, message_text)
+        await handle_end(update, message_text, context)
     else:
         await update.message.reply_text("ההודעה לא הובנה. השתמש ב-+ להוספת צ'יפים או בשם=כמות לציון כמות סופית.")
 
 # הוספת הגדרות ל-main
 def main():
+    global main_message_handler
+
     # Run the dummy server in a separate thread
     print("Starting dummy server thread")
     threading.Thread(target=start_summary_server, daemon=True).start()
     
     application = Application.builder().token(TOKEN).build()
     handlers = [
-        CommandHandler("summary", summary),
         CommandHandler("clear", clear),
         CommandHandler("debug", debug),
-        CommandHandler("endgame", endgame),
         CommandHandler("history", history),
         CommandHandler("stats", stats),
         CommandHandler("hole", hole),
@@ -649,8 +719,8 @@ def main():
     for handler in handlers:
         application.add_handler(handler)
     # הוספת Message Handler לטיפול בטקסט חופשי
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
+    main_message_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+    application.add_handler(main_message_handler)
 
     # Define error handler
     async def error_handler(update: Update, context: CallbackContext)-> None:
