@@ -3,13 +3,15 @@ from datetime import datetime
 from pymongo import MongoClient
 from telegram import Update, error
 from telegram.ext import Application, CommandHandler, CallbackContext, ContextTypes
+from telegram.ext import MessageHandler, filters
 import json
 from treys import Card, Deck, Evaluator
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # הגדרות קבועות ומידע חסוי ממשתני סביבה
 TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/mydatabase")
-
 
 # התחברות למסד הנתונים
 print(f"Connecting to MongoDB at {MONGO_URI}")
@@ -20,23 +22,8 @@ games_collection = db['games']
 print(f"Db connection established")
 
 # ==========================
-# פונקציות עזר
+# Web server for summary
 # ==========================
-
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
-
-def get_summary():
-    """ פונקציה שמחזירה את מספר המשחקים, הצ'אטים והשחקנים """
-    total_games = games_collection.count_documents({})
-    total_chats = len(games_collection.distinct("chat_id"))
-    total_players = players_collection.count_documents({})
-    return {
-        "total_games": total_games,
-        "total_chats": total_chats,
-        "total_players": total_players
-    }
-
 class SummaryHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/summary":
@@ -56,11 +43,20 @@ def start_summary_server():
     print("Starting summary server on port 8000")
     httpd.serve_forever()
 
-# Run the dummy server in a separate thread
-print("Starting dummy server thread")
-threading.Thread(target=start_summary_server, daemon=True).start()
-print("Dummy server thread started")
-
+# ==========================
+# Data access functions
+# ==========================
+def get_summary():
+    """ פונקציה שמחזירה את מספר המשחקים, הצ'אטים והשחקנים """
+    total_games = games_collection.count_documents({})
+    total_chats = len(games_collection.distinct("chat_id"))
+    total_players = players_collection.count_documents({})
+    return {
+        "total_games": total_games,
+        "total_chats": total_chats,
+        "total_players": total_players
+    }
+    
 def initialize_game_start_date_if_needed(game_id):
     """ מעדכנת את תאריך ההתחלה של המשחק אם לא הוגדר """
     active_game = games_collection.find_one({"_id": game_id})
@@ -84,7 +80,6 @@ def get_or_create_active_game(chat_id):
         game_id = active_game["_id"]
     return game_id
 
-
 def end_current_game(chat_id):
     """ מסמנת את המשחק הפעיל כלא פעיל ומעדכנת תאריך סיום """
     games_collection.update_one(
@@ -101,117 +96,8 @@ async def send_message(update, message):
     await update.message.reply_text(message)  
 
 # ==========================
-# פקודות בוט
+# probability calculations
 # ==========================
-async def hole(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Receive player's hole cards and start game tracking with initial probability calculation."""
-    if len(context.args) != 2:
-        await update.message.reply_text("שימוש: /hole <Card1> <Card2> (למשל /hole Qh Qs)")
-        return
-
-    try:
-        card1 = Card.new(context.args[0])
-        card2 = Card.new(context.args[1])
-        game_id = get_or_create_active_game(update.effective_chat.id)
-
-        # שמירת קלפי השחקן בבסיס הנתונים
-        games_collection.update_one(
-            {"_id": game_id},
-            {"$set": {"hole_cards": [card1, card2], "flop": [], "turn": None, "river": None}}
-        )
-
-        # חישוב הסיכויים הראשוניים עם 5 קלפי קהילה אקראיים
-        await calculate_detailed_probability(update, [card1, card2], [])
-
-    except Exception as e:
-        await update.message.reply_text(f"שגיאה: {e}")
-
-async def flop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Receive flop cards and update them in the database."""
-    if len(context.args) != 3:
-        await update.message.reply_text("שימוש: /flop <Card1> <Card2> <Card3> (למשל /flop 7h 8d 9c)")
-        return
-
-    try:
-        game_id = get_or_create_active_game(update.effective_chat.id)
-        hole_cards = games_collection.find_one({"_id": game_id}).get("hole_cards")
-
-        if not hole_cards:
-            await update.message.reply_text("לא הגדרת עדיין את הקלפים שלך. השתמש ב-/hole.")
-            return
-
-        flop_cards = [Card.new(card) for card in context.args]
-
-        # שמירת קלפי הפלופ בלבד
-        games_collection.update_one(
-            {"_id": game_id},
-            {"$set": {"flop": flop_cards}}
-        )
-
-        await calculate_detailed_probability(update, hole_cards, flop_cards)
-
-    except Exception as e:
-        await update.message.reply_text(f"שגיאה: {e}")
-
-async def turn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Receive turn card and update it in the database."""
-    if len(context.args) != 1:
-        await update.message.reply_text("שימוש: /turn <Card> (למשל /turn Jh)")
-        return
-
-    try:
-        game_id = get_or_create_active_game(update.effective_chat.id)
-        game_data = games_collection.find_one({"_id": game_id})
-        hole_cards = game_data.get("hole_cards")
-        flop_cards = game_data.get("flop", [])
-
-        if not hole_cards or len(flop_cards) < 3:
-            await update.message.reply_text("חסר מידע. השתמש ב-/hole ו-/flop לפני השימוש ב-/turn.")
-            return
-
-        turn_card = Card.new(context.args[0])
-
-        # שמירת קלף הטרן בלבד
-        games_collection.update_one(
-            {"_id": game_id},
-            {"$set": {"turn": turn_card}}
-        )
-
-        await calculate_detailed_probability(update, hole_cards, flop_cards + [turn_card])
-
-    except Exception as e:
-        await update.message.reply_text(f"שגיאה: {e}")
-
-async def river(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Receive river card and update it in the database."""
-    if len(context.args) != 1:
-        await update.message.reply_text("שימוש: /river <Card> (למשל /river Qc)")
-        return
-
-    try:
-        game_id = get_or_create_active_game(update.effective_chat.id)
-        game_data = games_collection.find_one({"_id": game_id})
-        hole_cards = game_data.get("hole_cards")
-        flop_cards = game_data.get("flop", [])
-        turn_card = game_data.get("turn")
-
-        if not hole_cards or len(flop_cards) < 3 or not turn_card:
-            await update.message.reply_text("חסר מידע. השתמש ב-/hole, /flop ו-/turn לפני השימוש ב-/river.")
-            return
-
-        river_card = Card.new(context.args[0])
-
-        # שמירת קלף הריבר בלבד
-        games_collection.update_one(
-            {"_id": game_id},
-            {"$set": {"river": river_card}}
-        )
-
-        await calculate_detailed_probability(update, hole_cards, flop_cards + [turn_card, river_card])
-
-    except Exception as e:
-        await update.message.reply_text(f"שגיאה: {e}")
-
 def create_probability_message(hole_cards, community_cards, hand_stats, win_probability, single_win_probability):
     """Generate a formatted message with game statistics and probabilities."""
     
@@ -332,71 +218,139 @@ async def calculate_detailed_probability(update, hole_cards, community_cards):
         hole_cards, community_cards, hand_stats,
         win_probability, single_win_probability)
     await send_message(update, message)
-    
-async def calculate_probability(update, hole_cards, community_cards):
-    """Calculate win probability based on current community cards and hole cards."""
-    evaluator = Evaluator()
-    deck = Deck()
-    opponent_count = players_collection.count_documents(
-        {"chat_id": update.effective_chat.id, "game_id": get_or_create_active_game(update.effective_chat.id)}
-    ) - 1
-
-    if opponent_count < 1:
-        await send_message(update, "יש לפחות יריב אחד לחישוב הסיכויים.")
+  
+# ==========================
+# פקודות בוט
+# ==========================
+async def hole(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Receive player's hole cards and start game tracking with initial probability calculation."""
+    if len(context.args) != 2:
+        await update.message.reply_text("שימוש: /hole <Card1> <Card2> (למשל /hole Qh Qs)")
         return
 
-    num_simulations = 10000
-    wins = 0
+    try:
+        card1 = Card.new(context.args[0])
+        card2 = Card.new(context.args[1])
+        game_id = get_or_create_active_game(update.effective_chat.id)
 
-    for _ in range(num_simulations):
-        deck.shuffle()
-        deck.cards = [card for card in deck.cards if card not in hole_cards + community_cards]
-        
-        opponent_hands = [deck.draw(2) for _ in range(opponent_count)]
-        community_draw = deck.draw(5 - len(community_cards))
-        full_community_cards = community_cards + community_draw
+        # שמירת קלפי השחקן בבסיס הנתונים
+        games_collection.update_one(
+            {"_id": game_id},
+            {"$set": {"hole_cards": [card1, card2], "flop": [], "turn": None, "river": None}}
+        )
 
-        player_score = evaluator.evaluate(hole_cards, full_community_cards)
-        opponent_scores = [evaluator.evaluate(hand, full_community_cards) for hand in opponent_hands]
-        
-        if all(player_score < score for score in opponent_scores):
-            wins += 1
+        # חישוב הסיכויים הראשוניים עם 5 קלפי קהילה אקראיים
+        await calculate_detailed_probability(update, [card1, card2], [])
 
-    win_probability = (wins / num_simulations) * 100
-    stage = {0: "Hole Cards", 3: "Flop", 4: "Turn", 5: "River"}[len(community_cards)]
+    except Exception as e:
+        await update.message.reply_text(f"שגיאה: {e}")
 
-    message = (
-        f"שלב: {stage}\n"
-        f"קלפי השחקן: {Card.int_to_pretty_str(hole_cards[0])} {Card.int_to_pretty_str(hole_cards[1])}\n"
-        f"קלפי הקהילה: {' '.join([Card.int_to_pretty_str(card) for card in community_cards])}\n"
-        f"סיכוי לניצחון ראש בראש: ~{round(win_probability)}%"
-    )
+async def flop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Receive flop cards and update them in the database."""
+    if len(context.args) != 3:
+        await update.message.reply_text("שימוש: /flop <Card1> <Card2> <Card3> (למשל /flop 7h 8d 9c)")
+        return
 
-    await send_message(update, message)
-    
-async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """ הוספת שחקנים עם כמות צ'יפים התחלתית """
+    try:
+        game_id = get_or_create_active_game(update.effective_chat.id)
+        hole_cards = games_collection.find_one({"_id": game_id}).get("hole_cards")
+
+        if not hole_cards:
+            await update.message.reply_text("לא הגדרת עדיין את הקלפים שלך. השתמש ב-/hole.")
+            return
+
+        flop_cards = [Card.new(card) for card in context.args]
+
+        # שמירת קלפי הפלופ בלבד
+        games_collection.update_one(
+            {"_id": game_id},
+            {"$set": {"flop": flop_cards}}
+        )
+
+        await calculate_detailed_probability(update, hole_cards, flop_cards)
+
+    except Exception as e:
+        await update.message.reply_text(f"שגיאה: {e}")
+
+async def turn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Receive turn card and update it in the database."""
+    if len(context.args) != 1:
+        await update.message.reply_text("שימוש: /turn <Card> (למשל /turn Jh)")
+        return
+
+    try:
+        game_id = get_or_create_active_game(update.effective_chat.id)
+        game_data = games_collection.find_one({"_id": game_id})
+        hole_cards = game_data.get("hole_cards")
+        flop_cards = game_data.get("flop", [])
+
+        if not hole_cards or len(flop_cards) < 3:
+            await update.message.reply_text("חסר מידע. השתמש ב-/hole ו-/flop לפני השימוש ב-/turn.")
+            return
+
+        turn_card = Card.new(context.args[0])
+
+        # שמירת קלף הטרן בלבד
+        games_collection.update_one(
+            {"_id": game_id},
+            {"$set": {"turn": turn_card}}
+        )
+
+        await calculate_detailed_probability(update, hole_cards, flop_cards + [turn_card])
+
+    except Exception as e:
+        await update.message.reply_text(f"שגיאה: {e}")
+
+async def river(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Receive river card and update it in the database."""
+    if len(context.args) != 1:
+        await update.message.reply_text("שימוש: /river <Card> (למשל /river Qc)")
+        return
+
+    try:
+        game_id = get_or_create_active_game(update.effective_chat.id)
+        game_data = games_collection.find_one({"_id": game_id})
+        hole_cards = game_data.get("hole_cards")
+        flop_cards = game_data.get("flop", [])
+        turn_card = game_data.get("turn")
+
+        if not hole_cards or len(flop_cards) < 3 or not turn_card:
+            await update.message.reply_text("חסר מידע. השתמש ב-/hole, /flop ו-/turn לפני השימוש ב-/river.")
+            return
+
+        river_card = Card.new(context.args[0])
+
+        # שמירת קלף הריבר בלבד
+        games_collection.update_one(
+            {"_id": game_id},
+            {"$set": {"river": river_card}}
+        )
+
+        await calculate_detailed_probability(update, hole_cards, flop_cards + [turn_card, river_card])
+
+    except Exception as e:
+        await update.message.reply_text(f"שגיאה: {e}")
+ 
+async def handle_buy(update: Update, message_text: str) -> None:
+    """פונקציה לטיפול בקניית צ'יפים עם פורמט '+<כמות> <שמות>'"""
     chat_id = update.effective_chat.id
     game_id = get_or_create_active_game(chat_id)
-
-    # קריאה לפונקציית העזר לעדכון תאריך ההתחלה אם זהו הקנייה הראשונה
     initialize_game_start_date_if_needed(game_id)
 
     try:
-        # The chip amount is now the first argument, followed by player names
-        chips_bought = int(context.args[0])
-        names = context.args[1:]  # All other arguments are considered player names
+        # מסירים את התו `+` ומחלקים
+        parts = message_text[1:].split()
+        chips_bought = int(parts[0])
+        names = parts[1:]
 
         if not names:
-            await send_message(update, "שימוש: /buy <כמות צ'יפים> <שם1> <שם2> ...")
+            await send_message(update, "שימוש: +<כמות צ'יפים> <שם1> <שם2> ...")
             return
 
         messages = []
         for name in names:
             player = get_player_data(chat_id, game_id, name)
-
             if player:
-                # Update existing player's chips
                 chips_total = chips_bought + player['chips_bought']
                 players_collection.update_one(
                     {"_id": player["_id"]},
@@ -404,7 +358,6 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 )
                 messages.append(f"שחקן {name} קיים, נוספו לו {chips_bought} צ'יפים (סה\"כ {chips_total})")
             else:
-                # Add new player with initial chips
                 players_collection.insert_one({
                     "chat_id": chat_id,
                     "game_id": game_id,
@@ -414,18 +367,21 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 })
                 messages.append(f"שחקן {name} נוסף עם {chips_bought} צ'יפים")
 
-        # Send a combined message for all players
         await send_message(update, "\n".join(messages))
     except (IndexError, ValueError):
-        await send_message(update, "שימוש: /buy <כמות צ'יפים> <שם1> <שם2> ...")
+        await send_message(update, "שימוש: +<כמות צ'יפים> <שם1> <שם2> ...")
 
-async def end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """ עדכון צ'יפים סופי עבור שחקן """
+async def handle_end(update: Update, message_text: str) -> None:
+    """פונקציה לטיפול בסיום עם פורמט '<שם>=<כמות>'"""
     chat_id = update.effective_chat.id
     game_id = get_or_create_active_game(chat_id)
 
     try:
-        name, chips_end = context.args[0], int(context.args[1])
+        # חלוקת ההודעה לפי `=`
+        name, chips_end = message_text.split('=')
+        name = name.strip()
+        chips_end = int(chips_end.strip())
+        
         player = get_player_data(chat_id, game_id, name)
 
         if player:
@@ -438,7 +394,7 @@ async def end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             message = f"שחקן {name} לא קיים"
         await send_message(update, message)
     except (IndexError, ValueError):
-        await send_message(update, "שימוש: /end <שם> <כמות צ'יפים>")
+        await send_message(update, "שימוש: <שם>=<כמות צ'יפים סופית>")
 
 async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
@@ -533,7 +489,16 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # מחיקת שחקנים בצ'אט הנוכחי בלבד
     result = players_collection.delete_many({"chat_id": chat_id, "game_id": game_id})
-    message += f"{result.deleted_count} שחקנים נמחקו\n"
+    games_collection.update_one(
+        {"_id": game_id},
+        {"$set": {"ranking": []}}
+    )
+    games_collection.update_one(
+            {"_id": game_id},
+            {"$set": {"hole_cards": [], "flop": [], "turn": None, "river": None}}
+    )
+    
+    message += f"{result.deleted_count} שחקנים קלפים ודרוג נמחקו\n"
     await update.message.reply_text(message)
 
 async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -596,7 +561,6 @@ async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await update.message.reply_text(message)
 
-
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     players_stats = []
@@ -652,13 +616,24 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # שליחת הפלט למשתמש
     await update.message.reply_text(message)
 
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message_text = update.message.text.strip()
+    
+    if message_text.startswith("+"):  # זיהוי פקודת קנייה בפורמט `+<כמות> <שמות>`
+        await handle_buy(update, message_text)
+    elif "=" in message_text:  # זיהוי פקודת סיום בפורמט `<שם>=<כמות>`
+        await handle_end(update, message_text)
+    else:
+        await update.message.reply_text("ההודעה לא הובנה. השתמש ב-+ להוספת צ'יפים או בשם=כמות לציון כמות סופית.")
 
 # הוספת הגדרות ל-main
 def main():
+    # Run the dummy server in a separate thread
+    print("Starting dummy server thread")
+    threading.Thread(target=start_summary_server, daemon=True).start()
+    
     application = Application.builder().token(TOKEN).build()
     handlers = [
-        CommandHandler("buy", buy),
-        CommandHandler("end", end),
         CommandHandler("summary", summary),
         CommandHandler("clear", clear),
         CommandHandler("debug", debug),
@@ -673,6 +648,9 @@ def main():
     
     for handler in handlers:
         application.add_handler(handler)
+    # הוספת Message Handler לטיפול בטקסט חופשי
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
 
     # Define error handler
     async def error_handler(update: Update, context: CallbackContext)-> None:
