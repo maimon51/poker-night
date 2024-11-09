@@ -46,6 +46,25 @@ def start_summary_server():
 # ========================================
 # Data access and general utlity functions
 # ========================================
+def parse_card_input(card_str):
+    """ממירה את הקלט של הקלף לפורמט מתאים """
+    
+    # המרה לאותיות גדולות וניקוי רווחים
+    card_str = card_str.strip().upper()
+
+    # המרה של "10" ל-"T" כדי להתאים לפורמט של STR_RANKS
+    card_str = card_str.replace("10", "T")
+
+    # בדיקת תקינות פורמט הקלט
+    if len(card_str) != 2:
+        raise ValueError(f"קלט לא תקין עבור הקלף: {card_str}")
+    
+    # פיצול לרמה וסוג
+    rank, suit = card_str[0], card_str[1].lower()  # סוג הקלף באות קטנה כדי להתאים למיפוי
+
+    # המרה לפורמט מתאים
+    return Card.new(f"{rank}{suit}")
+
 def get_summary():
     """ פונקציה שמחזירה את מספר המשחקים, הצ'אטים והשחקנים """
     total_games = games_collection.count_documents({})
@@ -191,7 +210,7 @@ def update_total_chips_end(game_id):
         {"_id": game_id},
         {"$set": {"total_chips_end": total_end}}
     )
-    
+
 # ==========================
 # probability calculations
 # ==========================
@@ -441,8 +460,8 @@ async def hole(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     try:
-        card1 = Card.new(context.args[0])
-        card2 = Card.new(context.args[1])
+        card1 = parse_card_input(context.args[0])
+        card2 = parse_card_input(context.args[1])
         game_id = get_or_create_active_game(update.effective_chat.id)
 
         # שמירת קלפי השחקן בבסיס הנתונים
@@ -471,7 +490,7 @@ async def flop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text("לא הגדרת עדיין את הקלפים שלך. השתמש ב-/hole.")
             return
 
-        flop_cards = [Card.new(card) for card in context.args]
+        flop_cards = [parse_card_input(card) for card in context.args]
 
         # שמירת קלפי הפלופ בלבד
         games_collection.update_one(
@@ -500,7 +519,7 @@ async def turn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text("חסר מידע. השתמש ב-/hole ו-/flop לפני השימוש ב-/turn.")
             return
 
-        turn_card = Card.new(context.args[0])
+        turn_card = parse_card_input(context.args[0])
 
         # שמירת קלף הטרן בלבד
         games_collection.update_one(
@@ -530,7 +549,7 @@ async def river(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text("חסר מידע. השתמש ב-/hole, /flop ו-/turn לפני השימוש ב-/river.")
             return
 
-        river_card = Card.new(context.args[0])
+        river_card = parse_card_input(context.args[0])
 
         # שמירת קלף הריבר בלבד
         games_collection.update_one(
@@ -703,7 +722,7 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     await update.message.reply_text(message)
  
- 
+
 # ==========================
 # Bot handler utilities
 # ==========================
