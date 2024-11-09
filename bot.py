@@ -74,7 +74,8 @@ def get_or_create_active_game(chat_id):
             "chat_id": chat_id,
             "start_date": None,
             "end_date": None,
-            "status": "active"
+            "status": "active",
+            "total_chips_end": 0  # שדה חדש עבור סך הצ'יפים הסופיים
         }).inserted_id
     else:
         game_id = active_game["_id"]
@@ -94,33 +95,6 @@ def get_player_data(chat_id, game_id, name):
 async def send_message(update, message):
     """ שולחת הודעה לצ'אט הנוכחי """
     await update.message.reply_text(message)  
-
-def all_players_finished(game_id):
-    """ בודקת אם לכל השחקנים במשחק הנוכחי יש כמות צ'יפים סופית """
-    unfinished_count = players_collection.count_documents({"game_id": game_id, "chips_end": None})
-    print("unfinished_count = ", unfinished_count)
-    return unfinished_count == 0
-
-def is_total_consistent(game_id, tolerance=0.05):
-    """ בודקת האם סכום הקניות תואם לסכום הצ'יפים הסופי עם סטייה מותרת """
-    # חישוב סך כל הצ'יפים שנקנו
-    total_bought_cursor = players_collection.aggregate([
-        {"$match": {"game_id": game_id}},
-        {"$group": {"_id": None, "total_bought": {"$sum": "$chips_bought"}}}
-    ])
-    total_bought_result = list(total_bought_cursor)
-    total_bought = total_bought_result[0]["total_bought"] if total_bought_result else 0
-
-    # חישוב סך כל הצ'יפים הסופיים
-    total_end_cursor = players_collection.aggregate([
-        {"$match": {"game_id": game_id, "chips_end": {"$ne": None}}},
-        {"$group": {"_id": None, "total_end": {"$sum": "$chips_end"}}}
-    ])
-    total_end_result = list(total_end_cursor)
-    total_end = total_end_result[0]["total_end"] if total_end_result else 0
-
-    # בדיקת התאמה עם סטייה מותרת
-    return abs(total_bought - total_end) <= total_bought * tolerance
 
 async def display_summary(update: Update, ratio: float):
     """מחשב ומציג סיכום המשחק בהתאם ליחס ההמרה שניתן"""
@@ -189,11 +163,42 @@ async def endgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # סיום המשחק הפעיל
     end_current_game(chat_id)
     await update.message.reply_text("המשחק הנוכחי הסתיים ונשמר בהיסטוריה.")
+
+def get_total_bought(game_id):
+    """מחזירה את סך הצ'יפים שנקנו במשחק."""
+    total_bought_cursor = players_collection.aggregate([
+        {"$match": {"game_id": game_id}},
+        {"$group": {"_id": None, "total_bought": {"$sum": "$chips_bought"}}}
+    ])
+    total_bought_result = list(total_bought_cursor)
+    return total_bought_result[0]["total_bought"] if total_bought_result else 0
+
+def get_unfinished_players(game_id):
+    """מחזירה את רשימת השחקנים שלא סיימו את המשחק (ללא ערך צ'יפים סופי)."""
+    return list(players_collection.find({"game_id": game_id, "chips_end": None}))
+
+def update_total_chips_end(game_id):
+    """מחשב מחדש ומעדכן את סך הצ'יפים הסופיים במשחק."""
+    total_end_cursor = players_collection.aggregate([
+        {"$match": {"game_id": game_id, "chips_end": {"$ne": None}}},
+        {"$group": {"_id": None, "total_end": {"$sum": "$chips_end"}}}
+    ])
+    total_end_result = list(total_end_cursor)
+    total_end = total_end_result[0]["total_end"] if total_end_result else 0
+
+    # עדכון הערך המחושב במסד הנתונים
+    games_collection.update_one(
+        {"_id": game_id},
+        {"$set": {"total_chips_end": total_end}}
+    )
     
 # ==========================
 # probability calculations
 # ==========================
-def create_probability_message(hole_cards, community_cards, hand_stats, win_probability, single_win_probability):
+
+# מטמון בזיכרון
+win_probability_cache = {}
+def create_probability_message(hole_cards, community_cards, hand_stats, multi_win_probability, single_win_probability):
     """Generate a formatted message with game statistics and probabilities."""
     
     # הצגת קלפי השחקן וקלפי הקהילה בפורמט פשוט
@@ -206,36 +211,30 @@ def create_probability_message(hole_cards, community_cards, hand_stats, win_prob
         f"קלפי הקהילה: {community_cards_display}\n"
     )
     
-    if win_probability is not None:
-        # טבלת סיכויי ידיים עבור כל היריבים
-        message += f"\n{'Hand':<15} | {'Player':<10} | {'Opponents'}\n"
-        message += "════════════════\n"
-        for hand_type, (player_percent, opponent_percent, _) in hand_stats.items():
-            player_display = f"{player_percent:>6.2f}%" if player_percent > 0 else "      "
-            opponent_display = f"{opponent_percent:>6.2f}%" if opponent_percent > 0 else "      "
-            message += f"{hand_type:<15} | {player_display} | {opponent_display}\n"
-
-        # סיכוי לניצחון, תיקו והפסד עבור כלל היריבים
-        message += f"✅ סיכוי לניצחון: {win_probability:.2f}%\n\n"
-
-    # טבלת סיכויי ידיים מול יריב אחד בלבד
-    message += f"{'Hand':<15} | {'Player':<10} | {'Opponent'}\n"
+    # טבלת סיכויי ידיים עבור כל היריבים
+    message += f"\n{'Hand':<15} | {'Player':<10}\n"
     message += "════════════════\n"
-    for hand_type, (player_percent, _, single_opponent_percent) in hand_stats.items():
-        player_display = f"{player_percent:>6.2f}%" if player_percent > 0 else "      "
-        single_opponent_display = f"{single_opponent_percent:>6.2f}%" if single_opponent_percent > 0 else "      "
-        message += f"{hand_type:<15} | {player_display} | {single_opponent_display}\n"
+    for hand_type, (player_percent, _, _) in sorted(hand_stats.items(), key=lambda x: x[1][0], reverse=True):
+        if player_percent > 0:
+            player_display = f"{player_percent:>6.2f}%"
+            message += f"{hand_type:<15} | {player_display}\n"
+            
+    if multi_win_probability is not None:
+        # סיכוי לניצחון, תיקו והפסד עבור כלל היריבים
+        message += f"מול כולם - ✅ סיכוי לניצחון: {multi_win_probability:.2f}%\n"
 
     # סיכוי לניצחון, תיקו והפסד עבור יריב אחד בלבד
-    message += f"✅ סיכוי לניצחון: {single_win_probability:.2f}%\n\n"
+    message += f"ראש בראש - ✅ סיכוי לניצחון: {single_win_probability:.2f}%\n\n"
 
     return message
 
 async def calculate_detailed_probability(update, hole_cards, community_cards):
     """Calculate win probability with detailed breakdown based on hand types."""
+    game_id = get_or_create_active_game(update.effective_chat.id)
+
     evaluator = Evaluator()
     opponent_count = players_collection.count_documents(
-        {"chat_id": update.effective_chat.id, "game_id": get_or_create_active_game(update.effective_chat.id)}
+        {"chat_id": update.effective_chat.id, "game_id": game_id}
     ) - 1
 
     if opponent_count < 1:
@@ -259,7 +258,7 @@ async def calculate_detailed_probability(update, hole_cards, community_cards):
     # בדיקה אם יש יותר מיריב אחד
     if opponent_count > 1:
         opponent_hand_counts = hand_counts.copy()
-        player_wins = 0
+        multi_player_wins = 0
 
     single_opponent_hand_counts = hand_counts.copy()
     single_opponent_wins = 0
@@ -287,7 +286,7 @@ async def calculate_detailed_probability(update, hole_cards, community_cards):
                 opponent_hand_counts[evaluator.class_to_string(opponent_best_hand_type)] += 1
 
                 if player_score < opponent_best_score:
-                    player_wins += 1
+                    multi_player_wins += 1
 
             # סימולציה נפרדת מול יריב אחד בלבד
             single_opponent_deck = Deck()
@@ -314,14 +313,124 @@ async def calculate_detailed_probability(update, hole_cards, community_cards):
             hand_stats[hand_type] = (player_percent, opponent_percent, single_opponent_percent)
 
     # אחוזי ניצחון ותיקו עבור כל היריבים ועבור יריב אחד
-    win_probability = (player_wins / num_simulations) * 100 if opponent_count > 1 else None
+    multi_win_probability = (multi_player_wins / num_simulations) * 100 if opponent_count > 1 else None
     single_win_probability = (single_opponent_wins / num_simulations) * 100
 
+    # יצירת הודעת טקסט עם הסיכויים
     message = create_probability_message(
         hole_cards, community_cards, hand_stats,
-        win_probability, single_win_probability)
-    await send_message(update, message)
-  
+        multi_win_probability, single_win_probability)
+    
+    # generate feedback for the player based on the current hand and probabilities
+    previous_win_probability = get_previous_win_probability_cache(game_id) or None
+    if not community_cards:
+        player_hand_type = "Pair" if Card.get_rank_int(hole_cards[0]) == Card.get_rank_int(hole_cards[1]) else "High Card"
+    else:
+        player_score = evaluator.evaluate(hole_cards, community_cards)
+        player_hand_type = evaluator.class_to_string(evaluator.get_rank_class(player_score))
+    feedback = generate_feedback(player_hand_type, hand_stats, multi_win_probability, previous_win_probability)
+    update_previous_win_probability_cache(game_id, multi_win_probability)
+
+    await send_message(update, message + feedback)
+
+def generate_hand_feedback(current_hand):
+    """Generates detailed strategic suggestions based on the current hand."""
+    feedback_message = f"\n🔍 היד הנוכחית שלך: {current_hand}\n"
+    
+    feedback_message += "\n📝 המלצה:\n"
+    if current_hand == "Four of a Kind":
+        feedback_message += (
+            "🎉 יש לך ארבעה קלפים זהים! זהו אחד המקרים החזקים ביותר. זה הזמן להעלות את ההימור "
+            "ולנסות למקסם את הרווח מהיריבים שלך.\n"
+        )
+    elif current_hand == "Full House":
+        feedback_message += (
+            "🏠 יש לך פול האוס - יד חזקה מאוד! תוכל לשקול להעלות את ההימור, אך עקוב אחרי התגובות של היריבים, "
+            "כדי להימנע מהפסד מיותר במקרה של יריב עם יד גבוהה יותר.\n"
+        )
+    elif current_hand == "Flush":
+        feedback_message += (
+            "♠ יש לך צבע! זו יד חזקה. נסה להעלות את ההימור כדי להפעיל לחץ על יריבים "
+            "פחות בטוחים. אך שים לב לקלפי הקהילה, ייתכן שיש ליריב רצף חזק.\n"
+        )
+    elif current_hand == "Straight":
+        feedback_message += (
+            "🔗 יש לך רצף! זהו מצב טוב, אך לא החזק ביותר. כדאי לשקול העלאה קטנה או לשחק בזהירות, במיוחד אם "
+            "יש לך רצף נמוך וקלפים גבוהים בשולחן.\n"
+        )
+    elif current_hand == "Three of a Kind":
+        feedback_message += (
+            "👀 יש לך שלשה. יד סבירה אך אינה החזקה ביותר. עדיף להיזהר אם היריבים מעלים את ההימור, "
+            "כי ייתכן שמישהו מחזיק יד חזקה יותר.\n"
+        )
+    elif current_hand == "Two Pair":
+        feedback_message += (
+            "✌️ יש לך זוגיים. יד טובה יחסית, אך כדאי לשחק בזהירות ולבדוק את התגובות של היריבים. "
+            "אם ישנו הימור גבוה, ייתכן שכדאי לפרוש.\n"
+        )
+    elif current_hand == "Pair":
+        feedback_message += (
+            "🃏 יש לך זוג. יד בסיסית, אך כדאי לשקול את ההימור בזהירות רבה. אם היריבים מעלים משמעותית, "
+            "עדיף לסגת ולשמור על הצ'יפים.\n"
+        )
+    else:
+        feedback_message += (
+            "💧 אין לך יד חזקה. עדיף לשקול לפרוש ולהמתין להזדמנות טובה יותר. הישאר במשחק רק אם ההימור נמוך."
+        )
+    
+    return feedback_message
+    
+def generate_feedback(current_hand, hand_stats, win_probability, previous_win_probability=None, stage=None):
+    """
+    יוצר פידבק לשחקן עם עצות מפורטות בהתאם לידו הנוכחית ולשלבי המשחק.
+    
+    Parameters:
+    - current_hand: str, סוג היד הנוכחית של השחקן (למשל: "Pair", "Flush")
+    - hand_stats: dict, סיכויי הידיים של היריבים לפי סוגי ידיים
+    - win_probability: float, סיכוי הניצחון הנוכחי של השחקן באחוזים
+    - previous_win_probability: float, סיכוי הניצחון מהשלב הקודם, אם קיים
+    
+    Returns:
+    - str, הודעת טקסט עם פידבק אסטרטגי לשחקן
+    """
+    
+    feedback_message = ""
+    
+    # השוואה לשלב הקודם אם קיים
+    if previous_win_probability is not None:
+        delta = abs(win_probability - previous_win_probability)
+        
+        if delta <= 2:  # שינוי זניח של עד 2%
+            feedback_message += "➡ מצבך נותר כמעט ללא שינוי מהשלב הקודם.\n"
+        elif win_probability > previous_win_probability:
+            feedback_message += "⬆ היד שלך התחזקה ביחס לשלב הקודם.\n"
+        else:
+            feedback_message += "⬇ היד שלך נחלשה. שקול את המשך הפעולות שלך בזהירות.\n"
+
+    feedback_message += generate_hand_feedback(current_hand)
+    
+    # מיון והצגת רק הידיים המסוכנות ביותר עם סיכוי גבוה (רק זוגיים ומעלה)
+    risk_hands = [
+        f'{hand} {chance:.2f}%'
+        for hand, (_, chance, _) in sorted(hand_stats.items(), key=lambda x: x[1][1], reverse=True)
+        if chance > 10 and hand in {"Two Pair", "Three of a Kind", "Straight", "Flush", "Full House", "Four of a Kind", "Straight Flush", "Royal Flush"}
+    ]
+
+    if risk_hands:
+        feedback_message += "\n⚠ שים לב! ליריבים יש סיכוי גבוה להשיג ידיים חזקות כמו:\n"
+        feedback_message += "\n".join(risk_hands)
+        feedback_message += "\n. התכונן להתמודד עם ידיים חזקות ולהימנע מהפתעות.\n"
+        
+    return feedback_message
+
+def get_previous_win_probability_cache(game_id):
+    """מחזירה את הסיכוי הקודם מהמטמון עבור game_id מסוים, או None אם לא קיים."""
+    return win_probability_cache.get(game_id)
+
+def update_previous_win_probability_cache(game_id, new_probability):
+    """מעדכנת את הסיכוי הקודם במטמון עבור game_id מסוים."""
+    win_probability_cache[game_id] = new_probability
+    
 # ==========================
 # BOT handlers for commands
 # ==========================
@@ -630,7 +739,7 @@ async def handle_buy(update: Update, message_text: str) -> None:
                     "game_id": game_id,
                     "name": name.lower(),
                     "chips_bought": chips_bought,
-                    "chips_end": 0
+                    "chips_end": None
                 })
                 messages.append(f"שחקן {name} נוסף עם {chips_bought} צ'יפים")
 
@@ -653,28 +762,38 @@ async def handle_end(update: Update, message_text: str, context: ContextTypes.DE
 
         if player:
             players_collection.update_one({"_id": player["_id"]}, {"$set": {"chips_end": chips_end}})
+            update_total_chips_end(game_id)            
             await send_message(update, f"שחקן {name} סיים עם {chips_end} צ'יפים")
         else:
             await send_message(update, f"שחקן {name} לא קיים")
             return
         
-        # Check if all players have finished and totals are consistent
-        if all_players_finished(game_id) and is_total_consistent(game_id):
+        # בדיקה אם נשאר רק שחקן אחד ללא ערך צ'יפים סופי
+        unfinished_players = get_unfinished_players(game_id)
+        if len(unfinished_players) == 1:
+            remaining_player = unfinished_players[0]
+
+            # חישוב הצ'יפים הנותרים עבור השחקן האחרון
+            total_bought = get_total_bought(game_id)
+            total_end = games_collection.find_one({"_id": game_id}).get("total_chips_end", 0)
+            remaining_chips = total_bought - total_end
+
+            # עדכון השחקן האחרון עם סכום הצ'יפים הנותרים
+            players_collection.update_one(
+                {"_id": remaining_player["_id"]},
+                {"$set": {"chips_end": remaining_chips}}
+            )
+            await send_message(update, f"שחקן {remaining_player['name']} הושלם אוטומטית עם {remaining_chips} צ'יפים.")
+            
             # כל השחקנים סיימו והסכום תואם - בקשה ליחס המרה
             await send_message(update, "כל השחקנים סיימו את המשחק. אנא הזן את יחס ההמרה (מחיר קניית אלף ציפים):")
             
             # הפעלת מצב המתנה ליחס המרה
             context.user_data["awaiting_ratio"] = True
-            
-        elif all_players_finished(game_id) and not is_total_consistent(game_id):
-            # כל השחקנים סיימו אך הסכומים לא תואמים - הודעת שגיאה
-            await send_message(update, "שגיאה: סכום הצ'יפים שנקנו אינו תואם לסכום שמסיים את המשחק.")
-            
-            
+                       
     except (IndexError, ValueError):
         await send_message(update, "שימוש: <שם>=<כמות צ'יפים סופית>")
 
- 
 # ==========================
 # Message Handler Main
 # ==========================
