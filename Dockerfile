@@ -7,6 +7,11 @@ RUN curl -sSL https://install.python-poetry.org | python3 -
 # הוספת Poetry ל- PATH
 ENV PATH="/root/.local/bin:$PATH"
 
+# Install required packages including libgl1
+RUN apt-get update && \
+    apt-get install -y libgl1-mesa-glx && \
+    apt-get clean
+    
 # הפעלת Poetry ללא סביבה וירטואלית
 ENV POETRY_VIRTUALENVS_CREATE=false
 

@@ -2,12 +2,87 @@ import os
 from datetime import datetime
 from pymongo import MongoClient
 from telegram import Update, error
-from telegram.ext import Application, CommandHandler, CallbackContext, ContextTypes
-from telegram.ext import MessageHandler, filters
+from telegram.ext import Application, CommandHandler, CallbackContext, ContextTypes, MessageHandler, filters
 import json
 from treys import Card, Deck, Evaluator
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from PIL import Image
+import tempfile
+from matplotlib.cm import ScalarMappable
+from ultralytics import YOLO
+
+import cv2
+import numpy as np
+from PIL import Image
+
+# נתיב הבסיס: מחושב אוטומטית לפי מיקום bot.py
+base_dir = os.path.dirname(os.path.abspath(__file__))
+os.chdir(base_dir)  # Set the current working directory to base_dir
+
+def preprocess_card_image(image_path):
+    # טוען את התמונה המקורית
+    image = cv2.imread(image_path)
+    
+    # שלב 1: הפיכת התמונה לגווני אפור
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # שלב 2: הגברת הניגודיות באמצעות histogram equalization
+    enhanced_gray = cv2.equalizeHist(gray)
+    
+    # שלב 3: החלת סף להדגשת הקלפים, תוך שמירה על פרטים
+    _, thresh = cv2.threshold(enhanced_gray, 150, 255, cv2.THRESH_BINARY_INV)
+    
+    # שלב 4: הוספת מעט מסגרת מסביב לקלף
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    bordered = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+    
+    # שלב 5: נקה רעש חיצוני (במיוחד אם יש אזורים בהירים קטנים בתמונה)
+    clean_image = cv2.medianBlur(bordered, 5)
+    
+    return clean_image
+
+# Load a model
+# data_path = os.path.join(os.path.expanduser("~"), "Nutrino/datasets/playing-cards-trainning-set/data.yaml")
+# model = YOLO("yolov8n.yaml")  # build a new model from scratch
+# results = model.train(data=data_path, epochs=3)  # train the model
+# results = model.val()  # evaluate model performance on the validation set
+# success = YOLO("yolov8n.pt").export(format="onnx")  # export a model to ONNX format
+
+# מעבר על כל קובצי HEIC בתיקייה
+#model_1 = YOLO("./yolov8m_synthetic.pt")
+#model_2 = YOLO("./yolov8s_playing_cards-1.pt")
+#model_3 = YOLO("./yolov8s_playing_cards-2.pt")
+
+# for filename in os.listdir(os.path.join(base_dir,'test-images')):
+#     if filename.find("processed") != -1 or filename.find(".jpg") == -1:
+#         continue
+#     heic_path = os.path.join(os.path.join(base_dir,'test-images'), filename)
+#     jpg_path = heic_path.replace(".HEIC", ".jpg")
+
+#     if not os.path.exists(jpg_path):
+#         with Image.open(heic_path) as img:
+#             img.convert("RGB").save(jpg_path, "JPEG")
+       
+#     # קריאה לתמונה והכנה
+#     #processed_image = preprocess_card_image(jpg_path)
+#     #processed_path = jpg_path.replace(".jpg", "_processed.jpg")
+#     #cv2.imwrite(processed_path, processed_image)
+
+#     #results1 = model_1(jpg_path)
+#     results2 = model_2(jpg_path)
+#     #results3 = model_2(processed_path)
+
+#     # הדפסת זיהויים עבור קלפים בלבד
+#     for i, results in enumerate([results2], 1):
+#             print(f"\nModel {i} detections:")
+#             for result in results:
+#                 if result.boxes:
+#                     for box in result.boxes:
+#                         card_label = result.names[int(box.cls)]
+#                         print(f"Identified card: {card_label}")
+#                 else:
+#                     print("No cards identified.")
 
 # הגדרות קבועות ומידע חסוי ממשתני סביבה
 TOKEN = os.getenv("BOT_TOKEN")
@@ -20,6 +95,45 @@ db = client['poker_bot']
 players_collection = db['players']
 games_collection = db['games']
 print(f"Db connection established")
+
+
+# ==========================
+# Card identification logic
+# ==========================
+def get_distinct_identified_cards(model, image_path):
+    results = model(image_path)
+    
+    card_confidences = []
+    for result in results:
+        if result.boxes:
+            for box in result.boxes:
+                card_label = result.names[int(box.cls)]
+                confidence = box.conf  # Confidence score for the detection
+                print (f"Identified card: {card_label} with confidence: {confidence}")
+                card_confidences.append((card_label, confidence))
+                
+        # Sort by confidence score in descending order 
+        top_cards = sorted(card_confidences, key=lambda x: x[1], reverse=True)
+        # Format output as a set of top two distinct cards
+        distinct_top_cards = {card for card, conf in top_cards if conf > 0.5}
+        
+    return list(distinct_top_cards)  # Convert to list if needed
+
+model_2 = YOLO("./yolov8s_playing_cards-1.pt")
+# for filename in os.listdir(os.path.join(base_dir,'test-images')):
+#     if filename.find("HEIC") != -1:
+#         heic_path = os.path.join(os.path.join(base_dir,'test-images'), filename)
+#         jpg_path = heic_path.replace(".HEIC", ".jpg")
+
+#         if not os.path.exists(jpg_path):
+#             with Image.open(heic_path) as img:
+#                 img.convert("RGB").save(jpg_path, "JPEG")
+#         continue
+                
+#     if filename.find("processed") != -1 or filename.find(".jpg") == -1:
+#         continue
+#     cards = get_distinct_identified_cards(model_2, os.path.join(os.path.join(base_dir,'test-images'), filename))
+#     print(f"Identified cards in {filename}: {cards}")
 
 # ==========================
 # Web server for summary
@@ -722,7 +836,6 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     await update.message.reply_text(message)
  
-
 # ==========================
 # Bot handler utilities
 # ==========================
@@ -817,7 +930,54 @@ async def handle_end(update: Update, message_text: str, context: ContextTypes.DE
 # Message Handler Main
 # ==========================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Main handler for regular messages"""
+    """Main handler for regular messages and images."""
+    # בדיקה אם ההודעה מכילה תמונה
+    if update.message.photo:
+        # קבלת מזהה המשחק הפעיל
+        game_id = get_or_create_active_game(update.effective_chat.id)
+        game_data = games_collection.find_one({"_id": game_id})
+        
+        # הורדת התמונה
+        photo_file = await update.message.photo[-1].get_file()
+        tempfilename = f"{tempfile.gettempdir()}/{photo_file.file_id}.jpg"
+        await photo_file.download_to_drive(tempfilename)
+
+        # זיהוי הקלפים בתמונה
+        detected_cards = get_distinct_identified_cards(model_2, tempfilename)
+        
+        try:
+            # טיפול בהתאם לכמות הקלפים שנמצאו
+            if len(detected_cards) == 2:
+                # קלפי "חור" - שליחת פקודת hole
+                context.args = detected_cards
+                await hole(update, context)
+            elif len(detected_cards) == 3:
+                # קלפי "פלופ" - שליחת פקודת flop
+                context.args = detected_cards
+                await flop(update, context)
+            elif len(detected_cards) == 4:
+                # get flop cards to identify the forth card
+                flop_cards = game_data.get("flop", [])
+                river_card = [card for card in detected_cards if card not in flop_cards]
+                context.args = [river_card] 
+                await turn(update, context)
+            elif len(detected_cards) == 5 :
+                # get flop cards and turn to identify the forth card
+                flop_cards = game_data.get("flop", [])
+                turn_card = game_data.get("turn")
+                river_card = [card for card in detected_cards if card not in flop_cards and card != turn_card]
+                
+                context.args = [river_card]
+                await river(update, context)
+            else:
+                await send_message(update,"Error: Incorrect number of cards detected for this stage.\n"+detected_cards)
+                return
+        except Exception as e:
+            await send_message(update,f"שגיאה: {e}")
+
+        return
+    
+    
     message_text = update.message.text.strip()
 
     # בדיקה אם מצפים ליחס המרה
@@ -865,7 +1025,7 @@ def main():
     for handler in handlers:
         application.add_handler(handler)
     # הוספת Message Handler לטיפול בטקסט חופשי
-    main_message_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+    main_message_handler = MessageHandler(filters.PHOTO | filters.TEXT, handle_message)
     application.add_handler(main_message_handler)
 
     # Define error handler
