@@ -115,7 +115,7 @@ def get_distinct_identified_cards(model, image_path):
         # Sort by confidence score in descending order 
         top_cards = sorted(card_confidences, key=lambda x: x[1], reverse=True)
         # Format output as a set of top two distinct cards
-        distinct_top_cards = {card for card, conf in top_cards if conf > 0.5}
+        distinct_top_cards = {card for card, conf in top_cards if conf > 0.45}
         
     return list(distinct_top_cards)  # Convert to list if needed
 
@@ -881,7 +881,6 @@ async def handle_buy(update: Update, message_text: str) -> None:
 
 async def handle_end(update: Update, message_text: str, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Process end command in the format '<name>=<amount>'."""
-    global main_message_handler
     chat_id = update.effective_chat.id
     game_id = get_or_create_active_game(chat_id)
 
@@ -944,7 +943,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         # זיהוי הקלפים בתמונה
         detected_cards = get_distinct_identified_cards(model_2, tempfilename)
-        
+        await send_message(update,f"קלפים שזוהו: {detected_cards}")
+
         try:
             # טיפול בהתאם לכמות הקלפים שנמצאו
             if len(detected_cards) == 2:
@@ -958,19 +958,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             elif len(detected_cards) == 4:
                 # get flop cards to identify the forth card
                 flop_cards = game_data.get("flop", [])
-                river_card = [card for card in detected_cards if card not in flop_cards]
-                context.args = [river_card] 
+                turn_card = [card for card in detected_cards if card not in flop_cards]
+                context.args = [turn_card] 
                 await turn(update, context)
             elif len(detected_cards) == 5 :
                 # get flop cards and turn to identify the forth card
                 flop_cards = game_data.get("flop", [])
                 turn_card = game_data.get("turn")
                 river_card = [card for card in detected_cards if card not in flop_cards and card != turn_card]
-                
                 context.args = [river_card]
                 await river(update, context)
             else:
-                await send_message(update,"Error: Incorrect number of cards detected for this stage.\n"+detected_cards)
+                await send_message(update,"Error: Incorrect number of cards detected for this stage.\n",detected_cards)
                 return
         except Exception as e:
             await send_message(update,f"שגיאה: {e}")
@@ -1004,8 +1003,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # הוספת הגדרות ל-main
 def main():
-    global main_message_handler
-
     # Run the dummy server in a separate thread
     print("Starting dummy server thread")
     threading.Thread(target=start_summary_server, daemon=True).start()
@@ -1019,15 +1016,13 @@ def main():
         CommandHandler("hole", hole),
         CommandHandler("flop", flop),
         CommandHandler("turn", turn),
-        CommandHandler("river", river)
+        CommandHandler("river", river),
+        MessageHandler(filters.PHOTO | filters.TEXT, handle_message)
     ]
     
     for handler in handlers:
         application.add_handler(handler)
-    # הוספת Message Handler לטיפול בטקסט חופשי
-    main_message_handler = MessageHandler(filters.PHOTO | filters.TEXT, handle_message)
-    application.add_handler(main_message_handler)
-
+    
     # Define error handler
     async def error_handler(update: Update, context: CallbackContext)-> None:
         print(f"An error occurred: {context.error}")
