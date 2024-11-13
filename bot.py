@@ -7,40 +7,39 @@ import json
 from treys import Card, Deck, Evaluator
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from PIL import Image
 import tempfile
-from matplotlib.cm import ScalarMappable
+#from matplotlib.cm import ScalarMappable
 from ultralytics import YOLO
 
-import cv2
-import numpy as np
-from PIL import Image
+#import cv2
+#import numpy as np
+#from PIL import Image
 
 # נתיב הבסיס: מחושב אוטומטית לפי מיקום bot.py
 base_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(base_dir)  # Set the current working directory to base_dir
 
-def preprocess_card_image(image_path):
-    # טוען את התמונה המקורית
-    image = cv2.imread(image_path)
+# def preprocess_card_image(image_path):
+#     # טוען את התמונה המקורית
+#     image = cv2.imread(image_path)
     
-    # שלב 1: הפיכת התמונה לגווני אפור
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+#     # שלב 1: הפיכת התמונה לגווני אפור
+#     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # שלב 2: הגברת הניגודיות באמצעות histogram equalization
-    enhanced_gray = cv2.equalizeHist(gray)
+#     # שלב 2: הגברת הניגודיות באמצעות histogram equalization
+#     enhanced_gray = cv2.equalizeHist(gray)
     
-    # שלב 3: החלת סף להדגשת הקלפים, תוך שמירה על פרטים
-    _, thresh = cv2.threshold(enhanced_gray, 150, 255, cv2.THRESH_BINARY_INV)
+#     # שלב 3: החלת סף להדגשת הקלפים, תוך שמירה על פרטים
+#     _, thresh = cv2.threshold(enhanced_gray, 150, 255, cv2.THRESH_BINARY_INV)
     
-    # שלב 4: הוספת מעט מסגרת מסביב לקלף
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    bordered = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+#     # שלב 4: הוספת מעט מסגרת מסביב לקלף
+#     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+#     bordered = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
     
-    # שלב 5: נקה רעש חיצוני (במיוחד אם יש אזורים בהירים קטנים בתמונה)
-    clean_image = cv2.medianBlur(bordered, 5)
+#     # שלב 5: נקה רעש חיצוני (במיוחד אם יש אזורים בהירים קטנים בתמונה)
+#     clean_image = cv2.medianBlur(bordered, 5)
     
-    return clean_image
+#     return clean_image
 
 # Load a model
 # data_path = os.path.join(os.path.expanduser("~"), "Nutrino/datasets/playing-cards-trainning-set/data.yaml")
