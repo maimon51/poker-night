@@ -1,8 +1,11 @@
 version: '3'
 services:
   bot:
-    build: .
+    platform: linux/amd64
     command: python bot.py
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: poker-night-bot:latest  # תן שם לתמונה
     environment:
       - MONGO_URI=mongodb+srv://maimon51:mgdk2ZpMx8iehODI@bot-db.opj9k.mongodb.net/?retryWrites=true&w=majority&appName=bot-db
