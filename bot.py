@@ -8,80 +8,11 @@ from treys import Card, Deck, Evaluator
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import tempfile
-#from matplotlib.cm import ScalarMappable
 from ultralytics import YOLO
-
-#import cv2
-#import numpy as np
-#from PIL import Image
 
 # נתיב הבסיס: מחושב אוטומטית לפי מיקום bot.py
 base_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(base_dir)  # Set the current working directory to base_dir
-
-# def preprocess_card_image(image_path):
-#     # טוען את התמונה המקורית
-#     image = cv2.imread(image_path)
-    
-#     # שלב 1: הפיכת התמונה לגווני אפור
-#     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    
-#     # שלב 2: הגברת הניגודיות באמצעות histogram equalization
-#     enhanced_gray = cv2.equalizeHist(gray)
-    
-#     # שלב 3: החלת סף להדגשת הקלפים, תוך שמירה על פרטים
-#     _, thresh = cv2.threshold(enhanced_gray, 150, 255, cv2.THRESH_BINARY_INV)
-    
-#     # שלב 4: הוספת מעט מסגרת מסביב לקלף
-#     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-#     bordered = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
-    
-#     # שלב 5: נקה רעש חיצוני (במיוחד אם יש אזורים בהירים קטנים בתמונה)
-#     clean_image = cv2.medianBlur(bordered, 5)
-    
-#     return clean_image
-
-# Load a model
-# data_path = os.path.join(os.path.expanduser("~"), "Nutrino/datasets/playing-cards-trainning-set/data.yaml")
-# model = YOLO("yolov8n.yaml")  # build a new model from scratch
-# results = model.train(data=data_path, epochs=3)  # train the model
-# results = model.val()  # evaluate model performance on the validation set
-# success = YOLO("yolov8n.pt").export(format="onnx")  # export a model to ONNX format
-
-# מעבר על כל קובצי HEIC בתיקייה
-#model_1 = YOLO("./yolov8m_synthetic.pt")
-#model_2 = YOLO("./yolov8s_playing_cards-1.pt")
-#model_3 = YOLO("./yolov8s_playing_cards-2.pt")
-
-# for filename in os.listdir(os.path.join(base_dir,'test-images')):
-#     if filename.find("processed") != -1 or filename.find(".jpg") == -1:
-#         continue
-#     heic_path = os.path.join(os.path.join(base_dir,'test-images'), filename)
-#     jpg_path = heic_path.replace(".HEIC", ".jpg")
-
-#     if not os.path.exists(jpg_path):
-#         with Image.open(heic_path) as img:
-#             img.convert("RGB").save(jpg_path, "JPEG")
-       
-#     # קריאה לתמונה והכנה
-#     #processed_image = preprocess_card_image(jpg_path)
-#     #processed_path = jpg_path.replace(".jpg", "_processed.jpg")
-#     #cv2.imwrite(processed_path, processed_image)
-
-#     #results1 = model_1(jpg_path)
-#     results2 = model_2(jpg_path)
-#     #results3 = model_2(processed_path)
-
-#     # הדפסת זיהויים עבור קלפים בלבד
-#     for i, results in enumerate([results2], 1):
-#             print(f"\nModel {i} detections:")
-#             for result in results:
-#                 if result.boxes:
-#                     for box in result.boxes:
-#                         card_label = result.names[int(box.cls)]
-#                         print(f"Identified card: {card_label}")
-#                 else:
-#                     print("No cards identified.")
 
 # הגדרות קבועות ומידע חסוי ממשתני סביבה
 TOKEN = os.getenv("BOT_TOKEN")
@@ -99,8 +30,47 @@ print(f"Db connection established")
 # ==========================
 # Card identification logic
 # ==========================
-def get_distinct_identified_cards(model, image_path):
-    results = model(image_path)
+import cv2
+
+def count_cards(image_path):
+    # Load the image
+    image = cv2.imread(image_path)
+    original_image = image.copy()
+    
+    # Convert to grayscale
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # Apply Gaussian Blur to reduce noise
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    
+    # Apply Canny Edge Detection
+    edges = cv2.Canny(blurred, threshold1=30, threshold2=150)
+    
+    # Find contours
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Filter contours based on area and aspect ratio
+    card_contours = []
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area > 1000:  # Filter out small contours
+            # Approximate the contour to reduce the number of points
+            perimeter = cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
+            
+            # Check if the contour has 4 sides (rectangle-like shape)
+            if len(approx) == 4:
+                card_contours.append(contour)
+
+    # Draw bounding boxes around detected cards for visualization
+    for contour in card_contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        cv2.rectangle(original_image, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+    return len(card_contours)
+
+def get_distinct_identified_cards(model_card, image_path):
+    results = model_card(image_path)
     
     card_confidences = []
     for result in results:
@@ -110,29 +80,25 @@ def get_distinct_identified_cards(model, image_path):
                 confidence = box.conf  # Confidence score for the detection
                 print (f"Identified card: {card_label} with confidence: {confidence}")
                 card_confidences.append((card_label, confidence))
+    
+    num_cards = count_cards(image_path)  # Count the total number of cards
                 
-        # Sort by confidence score in descending order 
-        top_cards = sorted(card_confidences, key=lambda x: x[1], reverse=True)
-        # Format output as a set of top two distinct cards
-        distinct_top_cards = {card for card, conf in top_cards if conf > 0.45}
-        
-    return list(distinct_top_cards)  # Convert to list if needed
+    # Sort by confidence score in descending order 
+    sorted_detections = sorted(card_confidences, key=lambda x: x[1], reverse=True)
+    # Extract unique card labels, limited by `num_cards`
+    distinct_cards = []
+    seen_cards = set()
+    for card_label, confidence in sorted_detections:
+        if card_label not in seen_cards:
+            distinct_cards.append(card_label)
+            seen_cards.add(card_label)
+        # Stop once we reach the desired number of cards
+        if len(distinct_cards) >= num_cards:
+            break
+    
+    return distinct_cards
 
-model_2 = YOLO("./yolov8s_playing_cards-1.pt")
-# for filename in os.listdir(os.path.join(base_dir,'test-images')):
-#     if filename.find("HEIC") != -1:
-#         heic_path = os.path.join(os.path.join(base_dir,'test-images'), filename)
-#         jpg_path = heic_path.replace(".HEIC", ".jpg")
-
-#         if not os.path.exists(jpg_path):
-#             with Image.open(heic_path) as img:
-#                 img.convert("RGB").save(jpg_path, "JPEG")
-#         continue
-                
-#     if filename.find("processed") != -1 or filename.find(".jpg") == -1:
-#         continue
-#     cards = get_distinct_identified_cards(model_2, os.path.join(os.path.join(base_dir,'test-images'), filename))
-#     print(f"Identified cards in {filename}: {cards}")
+card_model = YOLO("./yolov8s_playing_cards-1.pt")  # Model for identifying cards
 
 # ==========================
 # Web server for summary
@@ -941,8 +907,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await photo_file.download_to_drive(tempfilename)
 
         # זיהוי הקלפים בתמונה
-        detected_cards = get_distinct_identified_cards(model_2, tempfilename)
+        detected_cards = get_distinct_identified_cards(card_model, tempfilename)
         await send_message(update,f"קלפים שזוהו: {detected_cards}")
+        os.remove(tempfilename)
 
         try:
             # טיפול בהתאם לכמות הקלפים שנמצאו
@@ -957,18 +924,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             elif len(detected_cards) == 4:
                 # get flop cards to identify the forth card
                 flop_cards = game_data.get("flop", [])
-                turn_card = [card for card in detected_cards if card not in flop_cards]
-                context.args = [turn_card] 
+                turn_card = [card for card in detected_cards if parse_card_input(card) not in flop_cards]
+                context.args = turn_card
                 await turn(update, context)
             elif len(detected_cards) == 5 :
                 # get flop cards and turn to identify the forth card
                 flop_cards = game_data.get("flop", [])
                 turn_card = game_data.get("turn")
-                river_card = [card for card in detected_cards if card not in flop_cards and card != turn_card]
-                context.args = [river_card]
+                river_card = [card for card in detected_cards if parse_card_input(card) not in flop_cards and parse_card_input(card) != turn_card]
+                context.args = river_card
                 await river(update, context)
             else:
-                await send_message(update,"Error: Incorrect number of cards detected for this stage.\n",detected_cards)
+                await send_message(update,"Error: Incorrect number of cards detected for this stage.\n"+detected_cards)
                 return
         except Exception as e:
             await send_message(update,f"שגיאה: {e}")
