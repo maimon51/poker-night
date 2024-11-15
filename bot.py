@@ -529,10 +529,10 @@ def update_previous_win_probability_cache(game_id, new_probability):
     """מעדכנת את הסיכוי הקודם במטמון עבור game_id מסוים."""
     win_probability_cache[game_id] = new_probability
     
-# ==========================
-# BOT handlers for commands
-# ==========================
-async def hole(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# ======================================
+# BOT utilities for text handler commands 
+# ======================================
+async def handle_hole(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Receive player's hole cards and start game tracking with initial probability calculation."""
     if len(context.args) != 2:
         await update.message.reply_text("שימוש: /hole <Card1> <Card2> (למשל /hole Qh Qs)")
@@ -555,7 +555,7 @@ async def hole(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         await update.message.reply_text(f"שגיאה: {e}")
 
-async def flop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_flop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Receive flop cards and update them in the database."""
     if len(context.args) != 3:
         await update.message.reply_text("שימוש: /flop <Card1> <Card2> <Card3> (למשל /flop 7h 8d 9c)")
@@ -582,7 +582,7 @@ async def flop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         await update.message.reply_text(f"שגיאה: {e}")
 
-async def turn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_turn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Receive turn card and update it in the database."""
     if len(context.args) != 1:
         await update.message.reply_text("שימוש: /turn <Card> (למשל /turn Jh)")
@@ -611,7 +611,7 @@ async def turn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         await update.message.reply_text(f"שגיאה: {e}")
 
-async def river(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_river(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Receive river card and update it in the database."""
     if len(context.args) != 1:
         await update.message.reply_text("שימוש: /river <Card> (למשל /river Qc)")
@@ -641,9 +641,9 @@ async def river(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         await update.message.reply_text(f"שגיאה: {e}")
  
-# =================================
-# BOT utility and summary commands
-# =================================
+# =======================================
+# BOT utility and summary commands handler
+# =======================================
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     game_id = get_or_create_active_game(chat_id)
@@ -801,9 +801,9 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     await update.message.reply_text(message)
  
-# ==========================
-# Bot handler utilities
-# ==========================
+# =============================
+# Bot but end handler utilities
+# =============================
 async def handle_buy(update: Update, message_text: str) -> None:
     """פונקציה לטיפול בקניית צ'יפים עם פורמט '+<כמות> <שמות>'"""
     chat_id = update.effective_chat.id
@@ -894,13 +894,12 @@ async def handle_end(update: Update, message_text: str, context: ContextTypes.DE
 # Message Handler Main
 # ==========================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Main handler for regular messages and images."""
+    # קבלת מזהה המשחק הפעיל
+    game_id = get_or_create_active_game(update.effective_chat.id)
+    game_data = games_collection.find_one({"_id": game_id})
+    
     # בדיקה אם ההודעה מכילה תמונה
     if update.message.photo:
-        # קבלת מזהה המשחק הפעיל
-        game_id = get_or_create_active_game(update.effective_chat.id)
-        game_data = games_collection.find_one({"_id": game_id})
-        
         # הורדת התמונה
         photo_file = await update.message.photo[-1].get_file()
         tempfilename = f"{tempfile.gettempdir()}/{photo_file.file_id}.jpg"
@@ -916,24 +915,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if len(detected_cards) == 2:
                 # קלפי "חור" - שליחת פקודת hole
                 context.args = detected_cards
-                await hole(update, context)
+                await handle_hole(update, context)
             elif len(detected_cards) == 3:
                 # קלפי "פלופ" - שליחת פקודת flop
                 context.args = detected_cards
-                await flop(update, context)
+                await handle_flop(update, context)
             elif len(detected_cards) == 4:
                 # get flop cards to identify the forth card
                 flop_cards = game_data.get("flop", [])
                 turn_card = [card for card in detected_cards if parse_card_input(card) not in flop_cards]
                 context.args = turn_card
-                await turn(update, context)
+                await handle_turn(update, context)
             elif len(detected_cards) == 5 :
                 # get flop cards and turn to identify the forth card
                 flop_cards = game_data.get("flop", [])
                 turn_card = game_data.get("turn")
                 river_card = [card for card in detected_cards if parse_card_input(card) not in flop_cards and parse_card_input(card) != turn_card]
                 context.args = river_card
-                await river(update, context)
+                await handle_river(update, context)
             else:
                 await send_message(update,"Error: Incorrect number of cards detected for this stage.\n"+detected_cards)
                 return
@@ -964,9 +963,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await handle_buy(update, message_text)
     elif "=" in message_text:  # זיהוי פקודת סיום בפורמט `<שם>=<כמות>`
         await handle_end(update, message_text, context)
-    else:
-        await update.message.reply_text("ההודעה לא הובנה. השתמש ב-+ להוספת צ'יפים או בשם=כמות לציון כמות סופית.")
-
+    else: # assuming hole, flop, turn, river cards
+        detected_cards = message_text.split()
+        if len(detected_cards) == 2:
+            context.args = detected_cards
+            await handle_hole(update, context)
+        elif len(detected_cards) == 3:
+            context.args = detected_cards
+            await handle_flop(update, context)
+        elif len(detected_cards) == 1:
+            flop_cards = game_data.get("flop", [])
+            if not flop_cards:
+                await send_message(update,"אין קלפי פלופ עדיין. השתמש ב-3 קלפים לפלופ אח״ג תוסיף קלף לטרן וקלף לריבר.")
+                return
+            turn_card = game_data.get("turn")
+            if turn_card is None:
+                context.args = detected_cards
+                await handle_turn(update, context)
+            else:
+                context.args = detected_cards
+                await handle_river(update, context)
+        else:
+            await send_message(update,"ההודעה לא הובנה. השתמש ב-+ להוספת צ'יפים או בשם=כמות לציון כמות סופית או שלח קלפים (2 שלך, 3 פלופ, 1 טרן או ריבר).")
+        return
+            
 # הוספת הגדרות ל-main
 def main():
     # Run the dummy server in a separate thread
@@ -979,10 +999,6 @@ def main():
         CommandHandler("debug", debug),
         CommandHandler("history", history),
         CommandHandler("stats", stats),
-        CommandHandler("hole", hole),
-        CommandHandler("flop", flop),
-        CommandHandler("turn", turn),
-        CommandHandler("river", river),
         MessageHandler(filters.PHOTO | filters.TEXT, handle_message)
     ]
     
