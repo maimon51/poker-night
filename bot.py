@@ -326,7 +326,7 @@ def create_probability_message(hole_cards, community_cards, hand_stats, multi_wi
 
     return message
 
-async def calculate_detailed_probability(update, hole_cards, community_cards):
+async def calculate_probability_and_advice(update, hole_cards, community_cards):
     """Calculate win probability with detailed breakdown based on hand types."""
     game_id = get_or_create_active_game(update.effective_chat.id)
 
@@ -420,93 +420,106 @@ async def calculate_detailed_probability(update, hole_cards, community_cards):
         multi_win_probability, single_win_probability)
     
     # generate feedback for the player based on the current hand and probabilities
-    previous_win_probability = get_previous_win_probability_cache(game_id) or None
     if not community_cards:
         player_hand_type = "Pair" if Card.get_rank_int(hole_cards[0]) == Card.get_rank_int(hole_cards[1]) else "High Card"
     else:
         player_score = evaluator.evaluate(hole_cards, community_cards)
         player_hand_type = evaluator.class_to_string(evaluator.get_rank_class(player_score))
-    feedback = generate_feedback(player_hand_type, hand_stats, multi_win_probability, previous_win_probability)
-    update_previous_win_probability_cache(game_id, multi_win_probability)
+    feedback = generate_prev_and_opp_feedback(player_hand_type, hand_stats, multi_win_probability, single_win_probability,community_cards,game_id)
 
     await send_message(update, message + feedback)
 
-def generate_hand_feedback(current_hand):
-    """Generates detailed strategic suggestions based on the current hand."""
-    feedback_message = f"\n🔍 היד הנוכחית שלך: {current_hand}\n"
-    
-    feedback_message += "\n📝 המלצה:\n"
-    if current_hand == "Four of a Kind":
-        feedback_message += (
-            "🎉 יש לך ארבעה קלפים זהים! זהו אחד המקרים החזקים ביותר. זה הזמן להעלות את ההימור "
-            "ולנסות למקסם את הרווח מהיריבים שלך.\n"
-        )
-    elif current_hand == "Full House":
-        feedback_message += (
-            "🏠 יש לך פול האוס - יד חזקה מאוד! תוכל לשקול להעלות את ההימור, אך עקוב אחרי התגובות של היריבים, "
-            "כדי להימנע מהפסד מיותר במקרה של יריב עם יד גבוהה יותר.\n"
-        )
-    elif current_hand == "Flush":
-        feedback_message += (
-            "♠ יש לך צבע! זו יד חזקה. נסה להעלות את ההימור כדי להפעיל לחץ על יריבים "
-            "פחות בטוחים. אך שים לב לקלפי הקהילה, ייתכן שיש ליריב רצף חזק.\n"
-        )
-    elif current_hand == "Straight":
-        feedback_message += (
-            "🔗 יש לך רצף! זהו מצב טוב, אך לא החזק ביותר. כדאי לשקול העלאה קטנה או לשחק בזהירות, במיוחד אם "
-            "יש לך רצף נמוך וקלפים גבוהים בשולחן.\n"
-        )
-    elif current_hand == "Three of a Kind":
-        feedback_message += (
-            "👀 יש לך שלשה. יד סבירה אך אינה החזקה ביותר. עדיף להיזהר אם היריבים מעלים את ההימור, "
-            "כי ייתכן שמישהו מחזיק יד חזקה יותר.\n"
-        )
-    elif current_hand == "Two Pair":
-        feedback_message += (
-            "✌️ יש לך זוגיים. יד טובה יחסית, אך כדאי לשחק בזהירות ולבדוק את התגובות של היריבים. "
-            "אם ישנו הימור גבוה, ייתכן שכדאי לפרוש.\n"
-        )
-    elif current_hand == "Pair":
-        feedback_message += (
-            "🃏 יש לך זוג. יד בסיסית, אך כדאי לשקול את ההימור בזהירות רבה. אם היריבים מעלים משמעותית, "
-            "עדיף לסגת ולשמור על הצ'יפים.\n"
-        )
+def community_cards_to_stage(community_cards):
+    """ממירה את קלפי הקהילה לשלב המתאים במשחק"""
+    if len(community_cards) == 0:
+        return "preflop"
+    elif len(community_cards) == 3:
+        return "flop"
+    elif len(community_cards) == 4:
+        return "turn"
+    elif len(community_cards) == 5:
+        return "river"
     else:
-        feedback_message += (
-            "💧 אין לך יד חזקה. עדיף לשקול לפרוש ולהמתין להזדמנות טובה יותר. הישאר במשחק רק אם ההימור נמוך."
-        )
+        return "unknown"
     
-    return feedback_message
+def generate_hand_feedback(current_hand, community_cards, win_probability_all, win_probability_heads_up, opponents_hands):
     
-def generate_feedback(current_hand, hand_stats, win_probability, previous_win_probability=None, stage=None):
+    """Generates detailed strategic suggestions based on the current hand."""
+    advice = []
+    stage = community_cards_to_stage(community_cards)
+    # 1. Adjust advice based on the stage and hand strength
+    if current_hand == "Pair":
+        if stage == "preflop":
+            advice.append("זוג בפריפלופ הוא יד חזקה. נסה להעלות את ההימור כדי לסנן יריבים.")
+        elif stage in ["flop", "turn"] and win_probability_all > 20:
+            advice.append("יש לך זוג, שחק בזהירות אבל המשך אם ההימורים סבירים.")
+        elif stage == "river":
+            advice.append("זוג בלבד בשלב הריבר הוא יד חלשה. שקול לפרוש אם היריבים מעלים.")
+    elif current_hand == "Two Pair":
+        advice.append("זוגיים הם יד חזקה יחסית. נסה לשחק בזהירות ולהתאים את ההימור למצב היריבים.")
+    elif current_hand == "High Card":
+        if stage == "preflop":
+            advice.append("קלף גבוה לא משהו בינתיים. נסה להתאים את ההימור למצב.")
+        else:
+            advice.append("יד חלשה מאוד. שקול לפרוש ולהמתין להזדמנות טובה יותר.")
+    elif current_hand == "Four of a Kind":
+        advice.append ("🎉 יש לך ארבעה קלפים זהים! זהו אחד המקרים החזקים ביותר. זה הזמן להעלות את ההימור "
+            "ולנסות למקסם את הרווח מהיריבים שלך.")
+    elif current_hand == "Full House":
+        advice.append("🏠 יש לך פול האוס - יד חזקה מאוד! תוכל לשקול להעלות את ההימור, אך עקוב אחרי התגובות של היריבים, "
+            "כדי להימנע מהפסד מיותר במקרה של יריב עם יד גבוהה יותר.")
+    elif current_hand == "Flush":
+        advice.append ("♠ יש לך צבע! זו יד חזקה. נסה להעלות את ההימור כדי להפעיל לחץ על יריבים "
+            "פחות בטוחים. אך שים לב לקלפי הקהילה, ייתכן שיש ליריב רצף חזק.")
+    elif current_hand == "Straight":
+        advice.append("🔗 יש לך רצף! זהו מצב טוב, אך לא החזק ביותר. כדאי לשקול העלאה קטנה או לשחק בזהירות, במיוחד אם "
+            "יש לך רצף נמוך וקלפים גבוהים בשולחן.")
+    elif current_hand == "Three of a Kind":
+        advice.append("👀 יש לך שלשה. יד טובה אך אינה החזקה ביותר. עדיף להיזהר אם היריבים מעלים את ההימור, "
+            "כי ייתכן שמישהו מחזיק יד חזקה יותר.")
+
+    # 2. Consider win probability for advice
+    if win_probability_all > 70:
+        advice.append("הסיכויים שלך מול כולם מעולים, העלה את ההימור כדי למקסם את הרווח.")
+    elif win_probability_all > 50:
+        advice.append("הסיכויים שלך מול כולם טובים מאוד, שקול להעלות מעט את ההימור כדי למקסם את הרווח.")
+    elif win_probability_all > 30:
+        advice.append("הסיכויים שלך סבירים, שחק בזהירות והמתן להזדמנויות להימור.")
+    else:
+        advice.append("הסיכויים שלך נמוכים. עדיף לפרוש אם יש הימורים גבוהים.")
+
+    # 3. Consider differences in probabilities between all opponents and heads-up
+    if win_probability_heads_up > win_probability_all + 20 and win_probability_heads_up > 60:
+        advice.append("נסה לצמצם את מספר היריבים על ידי העלאות קלות.")
+    elif win_probability_heads_up > 50 and win_probability_all > 50:
+        advice.append("הסיכויים שלך טובים מאוד גם מול יריב אחד וגם מול כולם, נסה לשמור על כמה שיותר יריבים במשחק.")
+
+    # 4. Highlight specific threats based on community cards
+    if any("Flush" in hand or "Straight" in hand for hand in opponents_hands):
+        advice.append("יש איום של פלאש או סטרייט על השולחן. שקול את הצעדים בזהירות.")
+    elif len(opponents_hands) >= 3:
+        advice.append("עם מספר גבוה של ידיים, הסיכוי לידי יריבים חזקות גדל.")
+
+    return "\n".join(advice)
+   
+def generate_prev_and_opp_feedback(current_hand, hand_stats, multi_win_probability, single_win_probability,community_cards,game_id):
     """
     יוצר פידבק לשחקן עם עצות מפורטות בהתאם לידו הנוכחית ולשלבי המשחק.
-    
-    Parameters:
-    - current_hand: str, סוג היד הנוכחית של השחקן (למשל: "Pair", "Flush")
-    - hand_stats: dict, סיכויי הידיים של היריבים לפי סוגי ידיים
-    - win_probability: float, סיכוי הניצחון הנוכחי של השחקן באחוזים
-    - previous_win_probability: float, סיכוי הניצחון מהשלב הקודם, אם קיים
-    
-    Returns:
-    - str, הודעת טקסט עם פידבק אסטרטגי לשחקן
     """
-    
+    previous_win_probability = get_previous_win_probability_cache(game_id, multi_win_probability)
     feedback_message = ""
     
     # השוואה לשלב הקודם אם קיים
     if previous_win_probability is not None:
-        delta = abs(win_probability - previous_win_probability)
+        delta = abs(multi_win_probability - previous_win_probability)
         
-        if delta <= 2:  # שינוי זניח של עד 2%
+        if delta <= 5:  # שינוי זניח %
             feedback_message += "➡ מצבך נותר כמעט ללא שינוי מהשלב הקודם.\n"
-        elif win_probability > previous_win_probability:
+        elif multi_win_probability > previous_win_probability:
             feedback_message += "⬆ היד שלך התחזקה ביחס לשלב הקודם.\n"
         else:
             feedback_message += "⬇ היד שלך נחלשה. שקול את המשך הפעולות שלך בזהירות.\n"
 
-    feedback_message += generate_hand_feedback(current_hand)
-    
     # מיון והצגת רק הידיים המסוכנות ביותר עם סיכוי גבוה (רק זוגיים ומעלה)
     risk_hands = [
         f'{hand} {chance:.2f}%'
@@ -514,20 +527,23 @@ def generate_feedback(current_hand, hand_stats, win_probability, previous_win_pr
         if chance > 10 and hand in {"Two Pair", "Three of a Kind", "Straight", "Flush", "Full House", "Four of a Kind", "Straight Flush", "Royal Flush"}
     ]
 
+    feedback_message += generate_hand_feedback(current_hand, community_cards, multi_win_probability, single_win_probability, risk_hands)
+
     if risk_hands:
-        feedback_message += "\n⚠ שים לב! ליריבים יש סיכוי גבוה להשיג ידיים חזקות כמו:\n"
+        feedback_message += "\n⚠ שים לב! ליריבים יש סיכוי סביר להשיג ידיים חזקות כמו:\n"
         feedback_message += "\n".join(risk_hands)
         feedback_message += "\n. התכונן להתמודד עם ידיים חזקות ולהימנע מהפתעות.\n"
         
     return feedback_message
 
-def get_previous_win_probability_cache(game_id):
+def get_previous_win_probability_cache(game_id, new_probability):
+    global win_probability_cache
     """מחזירה את הסיכוי הקודם מהמטמון עבור game_id מסוים, או None אם לא קיים."""
-    return win_probability_cache.get(game_id)
-
-def update_previous_win_probability_cache(game_id, new_probability):
-    """מעדכנת את הסיכוי הקודם במטמון עבור game_id מסוים."""
+    prev = win_probability_cache.get(game_id)
     win_probability_cache[game_id] = new_probability
+    return prev
+
+    
     
 # ======================================
 # BOT utilities for text handler commands 
@@ -550,7 +566,7 @@ async def handle_hole(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
         # חישוב הסיכויים הראשוניים עם 5 קלפי קהילה אקראיים
-        await calculate_detailed_probability(update, [card1, card2], [])
+        await calculate_probability_and_advice(update, [card1, card2], [])
 
     except Exception as e:
         await update.message.reply_text(f"שגיאה: {e}")
@@ -577,7 +593,7 @@ async def handle_flop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             {"$set": {"flop": flop_cards}}
         )
 
-        await calculate_detailed_probability(update, hole_cards, flop_cards)
+        await calculate_probability_and_advice(update, hole_cards, flop_cards)
 
     except Exception as e:
         await update.message.reply_text(f"שגיאה: {e}")
@@ -606,7 +622,7 @@ async def handle_turn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             {"$set": {"turn": turn_card}}
         )
 
-        await calculate_detailed_probability(update, hole_cards, flop_cards + [turn_card])
+        await calculate_probability_and_advice(update, hole_cards, flop_cards + [turn_card])
 
     except Exception as e:
         await update.message.reply_text(f"שגיאה: {e}")
@@ -636,7 +652,7 @@ async def handle_river(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             {"$set": {"river": river_card}}
         )
 
-        await calculate_detailed_probability(update, hole_cards, flop_cards + [turn_card, river_card])
+        await calculate_probability_and_advice(update, hole_cards, flop_cards + [turn_card, river_card])
 
     except Exception as e:
         await update.message.reply_text(f"שגיאה: {e}")
